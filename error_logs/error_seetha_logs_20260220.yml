@@ -1,0 +1,169 @@
+# Error Logs - Seetha
+# Project: SellBot RAG System
+# Date: 2026-02-20
+
+errors:
+
+  - id: ERR_001
+    timestamp: "2026-02-20T23:45:00"
+    category: "RAG Pipeline"
+    description: "Blind character chunking at 400 chars was splitting sentences mid-word"
+    root_cause: |
+      chunk_text() in document_parsers.py used a simple character-based slicer
+      with no awareness of sentence boundaries. This produced chunks like:
+      "The property is located in Whi" and "tefield near the metro station."
+    impact: "Weak embeddings, poor retrieval accuracy, irrelevant results"
+    fix_applied: "Rewrote chunk_text() with regex sentence-boundary splitting"
+    status: "resolved"
+
+  - id: ERR_002
+    timestamp: "2026-02-20T23:45:00"
+    category: "RAG Pipeline"
+    description: "No text cleaning before chunking - raw parser artifacts in chunks"
+    root_cause: |
+      PDF and DOCX parsers left markers like [Page 1], [Table 2], and
+      hyphenated line breaks (e.g., "prop-\nerty") in the extracted text.
+      These artifacts were embedded into vector representations.
+    impact: "Noisy embeddings, wasted chunk space on non-content text"
+    fix_applied: "Added clean_text() function to remove markers, fix hyphenation, collapse whitespace"
+    status: "resolved"
+
+  - id: ERR_003
+    timestamp: "2026-02-20T23:45:00"
+    category: "Vector Database"
+    description: "IVFFlat index with lists=100 used on small dataset"
+    root_cause: |
+      pgvector was configured with IVFFlat index (lists=100) which requires
+      a large training dataset. With only 71 vectors, most clusters were empty
+      causing missed relevant results during search.
+    impact: "Search missed relevant chunks, poor recall"
+    fix_applied: "Switched to HNSW index (m=16, ef_construction=64) which works at any scale"
+    status: "resolved"
+
+  - id: ERR_004
+    timestamp: "2026-02-20T23:45:00"
+    category: "RAG Pipeline"
+    description: "No similarity threshold - irrelevant chunks sent to LLM"
+    root_cause: |
+      All top_k results were sent to the LLM regardless of similarity score.
+      Even chunks with 5% similarity were included as context, causing
+      the LLM to generate answers from irrelevant information.
+    impact: "LLM hallucination, incorrect answers"
+    fix_applied: "Added similarity_threshold=0.3 filter in query endpoint"
+    status: "resolved"
+
+  - id: ERR_005
+    timestamp: "2026-02-20T23:45:00"
+    category: "RAG Pipeline"
+    description: "Context sent to LLM was too small (only ~1,200 chars)"
+    root_cause: |
+      With chunk_size=400 and top_k=3, only about 1,200 characters of context
+      were sent to Gemini Flash which has a 1M token context window.
+      This massively underutilized the LLM's capacity.
+    impact: "LLM had insufficient context to generate comprehensive answers"
+    fix_applied: "Increased chunk_size to 800 and top_k to 5 (~4,000 chars context)"
+    status: "resolved"
+
+  - id: ERR_006
+    timestamp: "2026-02-20T23:58:00"
+    category: "Frontend"
+    description: "Raw error codes shown to users (e.g., 'Request failed with status code 500')"
+    root_cause: |
+      ChatWindow.tsx catch block displayed err.message directly to users,
+      showing technical HTTP status codes and axios error messages.
+    impact: "Poor user experience, confusing technical messages for end users"
+    fix_applied: "Added getErrorMessage() with user-friendly messages per status code"
+    status: "resolved"
+
+  - id: ERR_007
+    timestamp: "2026-02-20T23:58:00"
+    category: "Frontend"
+    description: "Error message mentioned 'backend' - technical jargon for end users"
+    root_cause: |
+      Connection error message said 'Please check that the RAG backend is running
+      at http://localhost:8000' which is meaningless to end users.
+    impact: "Confusing UX, users don't know what 'backend' means"
+    fix_applied: "Changed to 'I'm currently unavailable. Please try again in a few moments.'"
+    status: "resolved"
+
+  - id: ERR_008
+    timestamp: "2026-02-20T23:30:00"
+    category: "Build"
+    description: "TypeScript enum syntax error with erasableSyntaxOnly"
+    root_cause: |
+      constants.ts used TypeScript 'enum' keyword which is not allowed
+      when tsconfig has erasableSyntaxOnly enabled (TypeScript 5.8+).
+    impact: "Build failed with 'This syntax is not allowed when erasableSyntaxOnly is enabled'"
+    fix_applied: "Converted enums to 'const' objects with derived types"
+    status: "resolved"
+
+  - id: ERR_009
+    timestamp: "2026-02-21T10:50:00"
+    category: "RAG Retrieval"
+    description: "Same semantic question returns different results based on phrasing"
+    root_cause: |
+      Two queries with identical intent produced different results:
+      - "Give me the information about 3BHK Duplex" → "I don't have that information"
+      - "What is the 3 BHK Duplex?" → Correct answer (Sunrise Heights, 2200 sqft, Rs. 1.80 Cr)
+      Even with space ("3 BHK Duplex"), the first phrasing still failed.
+      Two issues identified:
+      1. similarity_threshold was set to 0.5 (too aggressive, filtering out valid matches)
+      2. No query normalization — "3BHK" vs "3 BHK" produce different embeddings
+      3. Imperative phrasing ("Give me info about") scores differently than
+         question phrasing ("What is") in the embedding space
+    impact: "Users get 'no information' for valid queries depending on how they phrase it"
+    fix_applied: |
+      1. Lowered similarity_threshold from 0.5 to 0.15 in config.py
+      2. Added normalize_query() in app.py — normalizes BHK, sqft, Crores, Lakhs, Rs. variants
+      3. Wired normalization before embedding in query endpoint
+      4. Improved "no results" message to guide users
+    files_changed:
+      - config.py (similarity_threshold 0.5 → 0.15)
+      - app.py (added normalize_query function, wired into /query endpoint)
+    status: "partially_resolved"
+    follow_up: "ERR_010"
+
+  - id: ERR_010
+    timestamp: "2026-02-21T10:57:00"
+    category: "RAG Retrieval"
+    description: "3 BHK Duplex query still fails after threshold + normalization fix"
+    root_cause: |
+      After lowering threshold to 0.15 and adding normalization, the query
+      "Give me the information about 3 BHK Duplex" now retrieves chunks — but
+      the WRONG chunks. It finds "3 BHK Lake View", "3 BHK Corner Unit" from
+      other projects, but the Sunrise Heights pricing table chunk (which contains
+      "3 BHK Duplex") ranks outside the top 5.
+      The chunk DOES exist (chunk 1 of Sunrise Heights, 788 chars) and contains
+      the full pricing table. The embedding model just ranks it lower for imperative
+      phrasing like "Give me information about..." vs "What is...".
+    impact: "LLM correctly says 'I don't have that info' because it genuinely isn't in the top-5 context"
+    fix_applied: |
+      1. Increased top_k from 5 to 10 in config.py (wider retrieval net)
+      2. Improved system prompt to instruct LLM to read ALL context chunks carefully
+      3. Changed "not found" LLM response from 'I don't have that information in my knowledge base'
+         to 'I couldn't find that information in the uploaded documents'
+    files_changed:
+      - config.py (top_k 5 → 10, improved system_prompt)
+    status: "resolved"
+
+  - id: ERR_011
+    timestamp: "2026-02-20T13:00:00"
+    category: "Frontend"
+    description: "Upload button positioned below the input box instead of inline"
+    root_cause: |
+      In ChatWindow.tsx, the input area used flex with items-end alignment.
+      The InputBox component returned both the text input AND a disclaimer
+      paragraph ("RAG can make mistakes...") inside a React fragment.
+      The flex container's height was determined by InputBox (input + disclaimer),
+      and the UploadButton aligned to the bottom of that — which was level
+      with the disclaimer text, not the input bar.
+    impact: "Upload icon appeared below and to the left of the input, not beside it"
+    fix_applied: |
+      1. Moved disclaimer text from InputBox to ChatWindow (outside the flex row)
+      2. Changed flex alignment from items-end to items-center
+      3. Added border-2 border-slate-200 with hover:border-primary to upload button
+    files_changed:
+      - RAG/src/components/chat/InputBox.tsx (removed disclaimer, returns only input div)
+      - RAG/src/components/chat/ChatWindow.tsx (disclaimer moved here, items-center flex)
+      - RAG/src/components/chat/UploadButton.tsx (added border + blue hover)
+    status: "resolved"

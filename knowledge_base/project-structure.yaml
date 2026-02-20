@@ -1,0 +1,827 @@
+# ============================================================================
+# RAG Project Structure Documentation
+# ============================================================================
+# This file documents the complete project structure, file purposes,
+# and architectural patterns for future reference and onboarding.
+#
+# Last Updated: 2026-02-02
+# ============================================================================
+
+project:
+  name: "RAG (Retrieval Augmented Generation) System"
+  type: "FastAPI Backend with Modular Architecture"
+  version: "1.0.0"
+  description: "Production-ready RAG system with swappable embedding models, vector databases, and LLMs"
+
+  key_features:
+    - "Plugin-based architecture with factory patterns"
+    - "Multiple vector database support (FAISS, ChromaDB, pgvector, Pinecone)"
+    - "Multiple embedding providers (local, OpenAI, Cohere)"
+    - "Streaming document upload (no disk storage)"
+    - "Support for PDF, DOCX, Excel, TXT files"
+    - "FastAPI REST API with Swagger docs"
+    - "PostgreSQL pgvector integration"
+
+  tech_stack:
+    backend: "Python 3.11+ with FastAPI"
+    embeddings:
+      - "sentence-transformers (local)"
+      - "OpenAI API"
+      - "Cohere API"
+    vector_databases:
+      - "FAISS (Meta)"
+      - "ChromaDB"
+      - "pgvector (PostgreSQL)"
+      - "Pinecone"
+    llms:
+      - "Google Gemini"
+      - "OpenAI GPT-4/3.5"
+      - "Anthropic Claude"
+    document_parsing:
+      - "PyPDF2"
+      - "pdfplumber"
+      - "python-docx"
+      - "openpyxl"
+      - "pandas"
+
+# ============================================================================
+# DIRECTORY STRUCTURE
+# ============================================================================
+
+directories:
+  root:
+    path: "/home/seetha/Documents/Seetha/RAG"
+    description: "Project root directory"
+
+  subdirectories:
+    - name: "sample_documents"
+      path: "./sample_documents"
+      purpose: "Sample text files for testing RAG system"
+      contents:
+        - "project_info.txt - Real estate project details"
+        - "amenities.txt - Property amenities information"
+        - "faq.txt - Frequently asked questions"
+      usage: "Used by simple_rag.py for demonstration"
+
+    - name: "vector_store"
+      path: "./vector_store"
+      purpose: "Persistent storage for FAISS and ChromaDB"
+      contents:
+        - "faiss.index - FAISS vector index"
+        - "faiss_metadata.json - Chunk metadata for FAISS"
+        - "chromadb/ - ChromaDB persistence directory"
+      notes: "Created automatically when using FAISS or ChromaDB"
+      git_ignore: true
+
+    - name: "frontend"
+      path: "./frontend"
+      purpose: "Frontend application (future/separate)"
+      status: "Placeholder for future UI development"
+
+    - name: "RAG"
+      path: "./RAG"
+      purpose: "Archive of old/alternative implementations"
+      contents:
+        - "simple_rag.py - Earlier version"
+        - "backend_use_cases.md - Use case documentation"
+        - "RAG_Implementation_Guide.md - Implementation guide"
+      status: "Legacy/archive"
+
+    - name: "venv"
+      path: "./venv"
+      purpose: "Python virtual environment"
+      git_ignore: true
+      notes: "Created with: python -m venv venv"
+
+    - name: "__pycache__"
+      path: "./__pycache__"
+      purpose: "Python bytecode cache"
+      git_ignore: true
+      auto_generated: true
+
+# ============================================================================
+# CORE PYTHON MODULES (Architecture)
+# ============================================================================
+
+core_modules:
+  - name: "app.py"
+    type: "FastAPI Application"
+    lines: 484
+    purpose: "Main FastAPI server - orchestrates all components"
+    responsibilities:
+      - "API endpoint definitions (upload, query, status, reset)"
+      - "Document upload and processing pipeline"
+      - "RAG query handling with LLM generation"
+      - "CORS middleware configuration"
+      - "Global state management (embedder, vector_db, llm_client)"
+    endpoints:
+      - "GET / - API information"
+      - "POST /upload - Upload and process documents"
+      - "POST /query - Query knowledge base with RAG"
+      - "GET /status - System statistics"
+      - "DELETE /reset - Clear vector database"
+      - "POST /save - Persist vector database"
+      - "POST /load - Load vector database"
+    dependencies:
+      - "config.py"
+      - "embeddings.py"
+      - "vector_databases.py"
+      - "document_parsers.py"
+    run_command: "uvicorn app:app --reload"
+    api_docs: "http://localhost:8000/docs"
+
+  - name: "config.py"
+    type: "Configuration Module"
+    lines: 207
+    purpose: "Centralized configuration - change providers without code changes"
+    sections:
+      - name: "EMBEDDING_CONFIG"
+        current_settings:
+          provider: "local"
+          model: "BAAI/bge-large-en-v1.5"
+          dimensions: 1024
+        alternatives:
+          - "OpenAI: text-embedding-3-small (1536 dims)"
+          - "Cohere: embed-english-v3.0 (1024 dims)"
+          - "Local: all-MiniLM-L6-v2 (384 dims)"
+
+      - name: "VECTOR_DB_CONFIG"
+        current_settings:
+          provider: "pgvector"
+          connection_string: "postgresql://postgres:password@localhost:5432/rag_db"
+          table_name: "rag_documents"
+        alternatives:
+          - "FAISS - Local, fast"
+          - "ChromaDB - Local with persistence"
+          - "Pinecone - Cloud, managed"
+
+      - name: "LLM_CONFIG"
+        current_settings:
+          provider: "gemini"
+          model: "models/gemini-3-flash-preview"
+        alternatives:
+          - "OpenAI: gpt-4-turbo, gpt-3.5-turbo"
+          - "Claude: claude-3-5-sonnet-20241022"
+
+      - name: "RAG_CONFIG"
+        settings:
+          chunk_size: 400
+          chunk_overlap: 100
+          top_k: 3
+          system_prompt: "Custom prompt template"
+
+      - name: "DOCUMENT_CONFIG"
+        settings:
+          supported_formats: [".pdf", ".docx", ".xlsx", ".txt"]
+          max_file_size_mb: 50
+          pdf_parser: "pypdf2"
+          excel_combine_sheets: true
+
+      - name: "API_CONFIG"
+        settings:
+          host: "0.0.0.0"
+          port: 8000
+          reload: true
+          cors_origins: ["*"]
+    notes: "Single source of truth for all configuration"
+
+  - name: "embeddings.py"
+    type: "Embedding Provider Module"
+    lines: 319
+    purpose: "Abstract interface for multiple embedding providers"
+    architecture: "Factory pattern with abstract base class"
+    classes:
+      - name: "EmbeddingProvider"
+        type: "Abstract Base Class"
+        methods:
+          - "embed(texts) -> np.ndarray"
+          - "get_dimensions() -> int"
+          - "get_model_name() -> str"
+
+      - name: "LocalEmbeddings"
+        implements: "EmbeddingProvider"
+        backend: "sentence-transformers"
+        models_supported:
+          - "all-MiniLM-L6-v2 (384 dims)"
+          - "all-mpnet-base-v2 (768 dims)"
+          - "BAAI/bge-large-en-v1.5 (1024 dims)"
+          - "e5-large-v2 (1024 dims)"
+        cost: "Free"
+        privacy: "Full (local processing)"
+
+      - name: "OpenAIEmbeddings"
+        implements: "EmbeddingProvider"
+        backend: "OpenAI API"
+        models_supported:
+          - "text-embedding-3-small (1536 dims) - $0.02/1M tokens"
+          - "text-embedding-3-large (3072 dims) - $0.13/1M tokens"
+        cost: "Paid"
+        privacy: "Cloud (data sent to OpenAI)"
+
+      - name: "CohereEmbeddings"
+        implements: "EmbeddingProvider"
+        backend: "Cohere API"
+        models_supported:
+          - "embed-english-v3.0 (1024 dims) - $0.10/1M tokens"
+          - "embed-multilingual-v3.0 (1024 dims) - $0.10/1M tokens"
+        cost: "Paid"
+        privacy: "Cloud"
+
+    functions:
+      - name: "get_embedding_provider(config)"
+        type: "Factory function"
+        purpose: "Create appropriate provider from config"
+
+  - name: "vector_databases.py"
+    type: "Vector Database Module"
+    lines: 724
+    purpose: "Abstract interface for multiple vector database providers"
+    architecture: "Factory pattern with abstract base class"
+    classes:
+      - name: "VectorDatabase"
+        type: "Abstract Base Class"
+        methods:
+          - "add(embeddings, texts, metadata) -> List[str]"
+          - "search(query_embedding, top_k) -> List[Tuple]"
+          - "save(path) -> None"
+          - "load(path) -> None"
+          - "reset() -> None"
+          - "get_stats() -> Dict"
+
+      - name: "FAISSDatabase"
+        implements: "VectorDatabase"
+        backend: "FAISS (Meta AI)"
+        storage: "In-memory with manual save/load"
+        persistence: "./vector_store/faiss.index"
+        best_for: "Prototyping, small-medium datasets (< 1M vectors)"
+        speed: "Fastest"
+        features:
+          - "Multiple index types (IndexFlatL2, IndexFlatIP)"
+          - "No metadata filtering"
+          - "Single machine"
+
+      - name: "ChromaDBDatabase"
+        implements: "VectorDatabase"
+        backend: "ChromaDB"
+        storage: "Embedded database with auto-persistence"
+        persistence: "./vector_store/chromadb"
+        best_for: "Local apps, 1-10M vectors"
+        speed: "Medium"
+        features:
+          - "Auto-persistence"
+          - "Metadata filtering"
+          - "Collections"
+
+      - name: "PgVectorDatabase"
+        implements: "VectorDatabase"
+        backend: "PostgreSQL with pgvector extension"
+        storage: "PostgreSQL database"
+        persistence: "Auto (database)"
+        best_for: "Production, SQL + vector queries, existing PostgreSQL users"
+        speed: "Fast (with index)"
+        features:
+          - "SQL queries with vector search"
+          - "ACID transactions"
+          - "Join vectors with business data"
+          - "IVFFlat indexing"
+        current_usage: true
+        notes: "Currently selected in config.py"
+
+      - name: "PineconeDatabase"
+        implements: "VectorDatabase"
+        backend: "Pinecone (cloud)"
+        storage: "Cloud-managed"
+        persistence: "Auto (cloud)"
+        best_for: "Production SaaS, 10M+ vectors, auto-scaling"
+        speed: "Fast (network latency)"
+        cost: "$70+/month"
+        features:
+          - "Fully managed"
+          - "Auto-scaling"
+          - "Multi-region"
+
+    functions:
+      - name: "get_vector_database(config, dimensions)"
+        type: "Factory function"
+        purpose: "Create appropriate database from config"
+
+  - name: "document_parsers.py"
+    type: "Document Parsing Module"
+    lines: 417
+    purpose: "Parse multiple document formats in-memory (streaming)"
+    architecture: "Functional with auto-detection"
+    key_principle: "No disk storage - all processing from bytes"
+
+    parsers:
+      - name: "parse_pdf_pypdf2(file_bytes)"
+        format: "PDF"
+        backend: "PyPDF2"
+        use_case: "General PDF parsing"
+
+      - name: "parse_pdf_pdfplumber(file_bytes)"
+        format: "PDF"
+        backend: "pdfplumber"
+        use_case: "PDFs with tables and complex layouts"
+
+      - name: "parse_docx_stream(file_bytes)"
+        format: "DOCX"
+        backend: "python-docx"
+        extracts:
+          - "Paragraphs"
+          - "Tables"
+
+      - name: "parse_excel_openpyxl(file_bytes)"
+        format: "Excel (.xlsx)"
+        backend: "openpyxl"
+        use_case: "Direct cell access"
+
+      - name: "parse_excel_pandas(file_bytes)"
+        format: "Excel (.xlsx)"
+        backend: "pandas"
+        use_case: "Data-oriented parsing"
+
+      - name: "parse_txt_stream(file_bytes)"
+        format: "Text (.txt)"
+        encoding: "UTF-8 (fallback: latin-1)"
+
+    functions:
+      - name: "auto_detect_and_parse(file_bytes, filename)"
+        purpose: "Auto-detect format and route to parser"
+        supported_formats: [".pdf", ".docx", ".xlsx", ".txt"]
+
+      - name: "chunk_text(text, chunk_size=400, overlap=100)"
+        purpose: "Split text into overlapping chunks"
+        algorithm: "Sliding window"
+        default_chunk_size: 400
+        default_overlap: 100
+
+      - name: "validate_file_size(file_bytes, max_size_mb=50)"
+        purpose: "Check file size before processing"
+
+      - name: "get_file_info(file_bytes, filename)"
+        purpose: "Extract file metadata"
+
+  - name: "simple_rag.py"
+    type: "Standalone RAG Demo"
+    lines: 200
+    purpose: "Simple RAG implementation without API server"
+    use_case: "Learning, testing, demonstration"
+    components:
+      - "Local embeddings (all-MiniLM-L6-v2)"
+      - "FAISS vector store"
+      - "Gemini API for generation"
+    runs_on: "sample_documents/"
+    command: "python simple_rag.py"
+
+  - name: "inspect_db.py"
+    type: "Database Inspection Utility"
+    lines: ~300
+    purpose: "Inspect vector database contents and statistics"
+    features:
+      - "Show total vectors/chunks"
+      - "Calculate storage size"
+      - "Display chunks per document"
+      - "Show sample data"
+      - "Estimate chunks for file sizes"
+    usage: "python inspect_db.py"
+    supports:
+      - "FAISS"
+      - "ChromaDB"
+      - "pgvector"
+      - "Pinecone"
+
+  - name: "inspect_faiss.py"
+    type: "FAISS-specific Inspection"
+    purpose: "Inspect FAISS index files"
+    usage: "python inspect_faiss.py"
+
+  - name: "pinecone_rag.py"
+    type: "Pinecone Integration Example"
+    purpose: "Alternative RAG implementation using Pinecone"
+    status: "Alternative/example"
+
+# ============================================================================
+# DOCUMENTATION FILES
+# ============================================================================
+
+documentation:
+  primary:
+    - name: "CLAUDE.md"
+      purpose: "Main guidance for Claude Code AI assistant"
+      audience: "AI assistants, developers"
+      content:
+        - "Project overview"
+        - "Development commands"
+        - "Configuration system"
+        - "Implementation details"
+        - "Common pitfalls"
+      references:
+        - "VECTOR_DB.md"
+        - "EMBEDDING_MODELS.md"
+        - "CHECKING_DATABASE.md"
+        - "RAG_IMPLEMENTATION_ALTERNATIVES.md"
+
+    - name: "README_SIMPLE_RAG.md"
+      purpose: "Getting started guide"
+      audience: "New users"
+      covers:
+        - "What is RAG?"
+        - "Setup instructions"
+        - "Running the system"
+        - "Understanding output"
+
+    - name: "VECTOR_DB.md"
+      purpose: "Complete vector database comparison"
+      length: "Comprehensive (~400 lines)"
+      content:
+        - "Comparison of all 6 vector DB options"
+        - "Performance benchmarks"
+        - "Use case recommendations"
+        - "Migration guides"
+        - "SQL examples for pgvector"
+
+    - name: "EMBEDDING_MODELS.md"
+      purpose: "Embedding model comparison and guide"
+      length: "Comprehensive (~600 lines)"
+      content:
+        - "10 embedding models compared"
+        - "Quality benchmarks (MTEB, BEIR)"
+        - "Cost analysis"
+        - "Speed comparisons"
+        - "When to use each model"
+
+    - name: "CHECKING_DATABASE.md"
+      purpose: "Guide for database inspection"
+      content:
+        - "How to check chunk count"
+        - "Chunk calculation formula"
+        - "API methods"
+        - "SQL queries"
+        - "Troubleshooting"
+
+    - name: "RAG_IMPLEMENTATION_ALTERNATIVES.md"
+      purpose: "Cost comparisons and architecture options"
+      content:
+        - "OpenAI vs Claude vs Gemini combinations"
+        - "Cost per 1000 queries"
+        - "Migration paths"
+        - "Recommended setups by budget"
+
+  technical:
+    - name: "API_DOCUMENTATION.md"
+      purpose: "API endpoint reference"
+
+    - name: "CODE_EXPLANATION.md"
+      purpose: "Detailed code explanation"
+
+    - name: "TECHNICAL_DEEP_DIVE.md"
+      purpose: "Deep technical architecture explanation"
+
+    - name: "RAG_DEEP_DIVE.md"
+      purpose: "RAG concepts and implementation details"
+
+  setup_guides:
+    - name: "QUICK_START.md"
+      purpose: "Quick setup guide"
+
+    - name: "NEW_SETUP_GUIDE.md"
+      purpose: "Comprehensive setup instructions"
+
+    - name: "PGVECTOR_SETUP.md"
+      purpose: "PostgreSQL pgvector setup guide"
+      content:
+        - "PostgreSQL installation"
+        - "pgvector extension setup"
+        - "Database configuration"
+        - "Connection setup"
+
+  archive:
+    - path: "./RAG/RAG_Implementation_Guide.md"
+      status: "Archive"
+    - path: "./RAG/backend_use_cases.md"
+      status: "Archive"
+
+# ============================================================================
+# CONFIGURATION FILES
+# ============================================================================
+
+configuration_files:
+  - name: ".env"
+    purpose: "Environment variables (secrets)"
+    git_ignore: true
+    contains:
+      - "GEMINI_API_KEY"
+      - "OPENAI_API_KEY (optional)"
+      - "ANTHROPIC_API_KEY (optional)"
+      - "COHERE_API_KEY (optional)"
+      - "PINECONE_API_KEY (optional)"
+      - "PGVECTOR_CONNECTION_STRING"
+    security: "NEVER commit to git"
+
+  - name: ".env.example"
+    purpose: "Template for .env file"
+    git_tracked: true
+    usage: "Copy to .env and fill in actual values"
+
+  - name: "requirements.txt"
+    purpose: "Simple RAG dependencies"
+    for: "simple_rag.py"
+    packages:
+      - "google-generativeai"
+      - "sentence-transformers"
+      - "faiss-cpu"
+      - "python-dotenv"
+      - "numpy"
+
+  - name: "requirements_api.txt"
+    purpose: "Full API server dependencies"
+    for: "app.py (FastAPI server)"
+    packages:
+      core:
+        - "google-genai"
+        - "sentence-transformers"
+        - "faiss-cpu"
+        - "python-dotenv"
+        - "numpy"
+      api:
+        - "fastapi>=0.104.0"
+        - "uvicorn[standard]>=0.24.0"
+        - "python-multipart"
+      parsing:
+        - "PyPDF2>=3.0.0"
+        - "pdfplumber>=0.10.0"
+        - "python-docx>=1.0.0"
+        - "openpyxl>=3.1.0"
+        - "pandas>=2.0.0"
+      database:
+        - "psycopg2-binary>=2.9.0"
+      optional:
+        - "openai (uncomment if using)"
+        - "anthropic (uncomment if using)"
+        - "cohere (uncomment if using)"
+        - "pinecone-client (uncomment if using)"
+        - "chromadb (uncomment if using)"
+
+# ============================================================================
+# DATA DIRECTORIES & FILES
+# ============================================================================
+
+data:
+  sample_documents:
+    location: "./sample_documents/"
+    purpose: "Sample documents for testing"
+    files:
+      - name: "project_info.txt"
+        size: "952 bytes"
+        content: "Real estate project description"
+        chunks_generated: "~3-4"
+
+      - name: "amenities.txt"
+        size: "1169 bytes"
+        content: "Property amenities list"
+        chunks_generated: "~4-5"
+
+      - name: "faq.txt"
+        size: "1810 bytes"
+        content: "Frequently asked questions"
+        chunks_generated: "~6-7"
+
+  vector_store:
+    location: "./vector_store/"
+    purpose: "Persistent storage for vector databases"
+    auto_created: true
+
+    faiss:
+      - name: "faiss.index"
+        type: "FAISS index file"
+        format: "Binary"
+        size: "~4KB per 1000 vectors (1024 dims)"
+
+      - name: "faiss_metadata.json"
+        type: "Metadata storage"
+        format: "JSON"
+        contains:
+          - "Chunk ID"
+          - "Text content"
+          - "Metadata (filename, chunk_index, etc.)"
+
+    chromadb:
+      - name: "chromadb/"
+        type: "ChromaDB persistence directory"
+        auto_managed: true
+
+# ============================================================================
+# ARCHITECTURE PATTERNS
+# ============================================================================
+
+architecture:
+  design_patterns:
+    - name: "Factory Pattern"
+      used_in:
+        - "embeddings.py - get_embedding_provider()"
+        - "vector_databases.py - get_vector_database()"
+      purpose: "Create providers based on configuration without code changes"
+
+    - name: "Abstract Base Class (ABC)"
+      used_in:
+        - "EmbeddingProvider"
+        - "VectorDatabase"
+      purpose: "Define interfaces for swappable implementations"
+
+    - name: "Strategy Pattern"
+      used_in:
+        - "Document parsers (PDF, DOCX, Excel)"
+      purpose: "Different parsing strategies for different formats"
+
+    - name: "Streaming Pattern"
+      used_in:
+        - "Document upload (FastAPI UploadFile)"
+        - "All parsers (work with bytes, not files)"
+      purpose: "Process files in-memory without disk storage"
+
+  configuration_over_code:
+    principle: "Change behavior via config.py, not code modifications"
+    examples:
+      - "Switch from FAISS to pgvector: Change VECTOR_DB_CONFIG['provider']"
+      - "Switch from local to OpenAI embeddings: Change EMBEDDING_CONFIG['provider']"
+      - "Switch from Gemini to Claude: Change LLM_CONFIG['provider']"
+
+  modularity:
+    core_modules:
+      - "embeddings.py - Independent, swappable"
+      - "vector_databases.py - Independent, swappable"
+      - "document_parsers.py - Independent, stateless"
+      - "config.py - Single source of truth"
+    integration_point: "app.py - Orchestrates all modules"
+
+  data_flow:
+    upload:
+      - "User uploads file → FastAPI UploadFile"
+      - "File.read() → bytes (streaming, no disk)"
+      - "auto_detect_and_parse() → text"
+      - "chunk_text() → chunks"
+      - "embedder.embed() → embeddings"
+      - "vector_db.add() → stored vectors"
+
+    query:
+      - "User sends query → string"
+      - "embedder.embed() → query_embedding"
+      - "vector_db.search() → top_k chunks"
+      - "generate_answer() → LLM response"
+      - "Return answer + sources"
+
+# ============================================================================
+# WORKFLOW & COMMANDS
+# ============================================================================
+
+workflows:
+  development:
+    setup:
+      - "python -m venv venv"
+      - "source venv/bin/activate"
+      - "pip install -r requirements_api.txt"
+      - "cp .env.example .env"
+      - "Edit .env with API keys"
+
+    run_server:
+      - "uvicorn app:app --reload"
+      - "Visit http://localhost:8000/docs"
+
+    test_simple:
+      - "python simple_rag.py"
+
+    inspect_database:
+      - "python inspect_db.py"
+
+  production:
+    deployment:
+      - "Set environment variables"
+      - "Install PostgreSQL + pgvector (if using)"
+      - "pip install -r requirements_api.txt"
+      - "uvicorn app:app --host 0.0.0.0 --port 8000"
+
+    monitoring:
+      - "GET /status - Check system health"
+      - "inspect_db.py - Database inspection"
+      - "PostgreSQL logs - For pgvector"
+
+# ============================================================================
+# CURRENT CONFIGURATION (As of 2026-02-02)
+# ============================================================================
+
+current_setup:
+  embedding:
+    provider: "local (sentence-transformers)"
+    model: "BAAI/bge-large-en-v1.5"
+    dimensions: 1024
+    cost: "Free"
+    quality: "Excellent (88% MTEB score)"
+    reason: "Best free quality, privacy, zero API costs"
+
+  vector_database:
+    provider: "pgvector"
+    backend: "PostgreSQL with vector extension"
+    connection: "postgresql://postgres:password@localhost:5432/rag_db"
+    table: "rag_documents"
+    reason: "SQL + vector queries, production-ready, existing infrastructure"
+
+  llm:
+    provider: "gemini"
+    model: "models/gemini-3-flash-preview"
+    cost: "~$2.50/month for moderate use"
+    reason: "Cost-effective, good quality"
+
+  rag_settings:
+    chunk_size: 400
+    chunk_overlap: 100
+    top_k: 3
+
+  cost_estimate:
+    monthly: "$2.50 - $10"
+    breakdown:
+      embeddings: "$0 (local)"
+      vector_db: "$0 (self-hosted PostgreSQL)"
+      llm: "$2.50 (Gemini API)"
+
+# ============================================================================
+# MIGRATION PATHS
+# ============================================================================
+
+migration_paths:
+  to_openai:
+    steps:
+      - "Add OPENAI_API_KEY to .env"
+      - "Change EMBEDDING_CONFIG['provider'] to 'openai'"
+      - "Change LLM_CONFIG['provider'] to 'openai'"
+    cost_impact: "+$10-30/month"
+    quality_gain: "+3-5% retrieval accuracy"
+
+  to_cloud_vector_db:
+    steps:
+      - "Sign up for Pinecone/Qdrant"
+      - "Change VECTOR_DB_CONFIG['provider'] to 'pinecone'"
+      - "Re-upload all documents"
+    cost_impact: "+$70/month"
+    benefit: "Auto-scaling, managed service"
+
+  to_faiss:
+    steps:
+      - "Change VECTOR_DB_CONFIG['provider'] to 'faiss'"
+      - "Restart server (will auto-create FAISS index)"
+    cost_impact: "$0"
+    benefit: "Faster queries, simpler setup"
+    tradeoff: "Manual persistence, no SQL queries"
+
+# ============================================================================
+# FUTURE ENHANCEMENTS
+# ============================================================================
+
+future_enhancements:
+  planned:
+    - "Frontend UI (React/Vue)"
+    - "User authentication"
+    - "Document approval workflow"
+    - "Query analytics dashboard"
+    - "Hybrid search (semantic + keyword)"
+    - "Re-ranking for better results"
+    - "Multi-tenancy support"
+    - "Caching layer (Redis)"
+
+  considerations:
+    - "Self-hosted LLM option (Ollama, LocalAI)"
+    - "Fine-tuning embeddings for domain"
+    - "Advanced chunking strategies"
+    - "Document versioning"
+    - "A/B testing framework"
+
+# ============================================================================
+# NOTES
+# ============================================================================
+
+notes:
+  strengths:
+    - "Highly modular and swappable components"
+    - "No vendor lock-in"
+    - "Production-ready with pgvector"
+    - "Extensive documentation"
+    - "Cost-effective default setup"
+
+  limitations:
+    - "No built-in authentication"
+    - "No document versioning"
+    - "Single-threaded processing"
+    - "No distributed deployment support (yet)"
+
+  best_practices:
+    - "Always use config.py to change providers"
+    - "Never commit .env to git"
+    - "Run inspect_db.py to verify uploads"
+    - "Use /status endpoint for monitoring"
+    - "Test with simple_rag.py before API deployment"
+
+  troubleshooting:
+    - "Check CLAUDE.md for common pitfalls"
+    - "Use inspect_db.py to verify database state"
+    - "Check logs for API errors"
+    - "Verify PostgreSQL is running (if using pgvector)"
+    - "Ensure API keys are correct in .env"

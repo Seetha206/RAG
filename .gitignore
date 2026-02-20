@@ -1,0 +1,39 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment variables (secrets)
+.env
+
+# Vector stores / indexes
+vector_store/
+knowledge_base.index
+*.index
+
+# Node.js
+node_modules/
+
+# Archives
+*.zip
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs (optional — remove these lines if you want logs tracked)
+# error_logs/
+# session_logs/
+
+# Build outputs
+RAG/dist/

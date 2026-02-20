@@ -1,0 +1,303 @@
+# Session Logs - Seetha
+# Project: SellBot RAG System
+# Last Updated: 2026-02-20
+
+sessions:
+
+  - session_id: SESSION_001
+    date: "2026-02-20"
+    duration: "~3 hours"
+    summary: "Full RAG system analysis, pipeline fixes, UI redesign, document generation"
+
+    activities:
+
+      - order: 1
+        timestamp: "2026-02-20T21:00:00"
+        action: "CLAUDE.md initialization"
+        description: |
+          Analyzed the full codebase and created/improved CLAUDE.md with:
+          - Project architecture documentation
+          - Development commands (Python backend + React frontend)
+          - API endpoints reference
+          - Provider plugin system guide
+          - Environment variables and RAG tuning parameters
+        files_changed:
+          - CLAUDE.md
+
+      - order: 2
+        timestamp: "2026-02-20T21:30:00"
+        action: "RAG pipeline deep analysis"
+        description: |
+          Analyzed 6 areas of the RAG pipeline:
+          1. Chunking strategy - found blind 400-char character splitting
+          2. pgvector storage - found IVFFlat index wrong for small datasets
+          3. Retrieval quality - no similarity threshold filtering
+          4. Context size - only ~1,200 chars sent to Gemini (1M token capacity)
+          5. Query flow - no text cleaning before embedding
+          6. Improvement recommendations ranked by impact
+        outcome: "Identified 5 critical issues to fix"
+
+      - order: 3
+        timestamp: "2026-02-20T22:00:00"
+        action: "Implemented RAG pipeline fixes"
+        description: |
+          Fixed all 5 identified issues:
+          - Added clean_text() function for text preprocessing
+          - Rewrote chunk_text() with sentence-boundary splitting
+          - Changed chunk_size 400→800, overlap 100→200, top_k 3→5
+          - Added similarity_threshold=0.3 config
+          - Switched pgvector index from IVFFlat to HNSW
+          - Wired clean_text into upload pipeline
+          - Added threshold filter in query endpoint
+        files_changed:
+          - document_parsers.py
+          - config.py
+          - vector_databases.py
+          - app.py
+
+      - order: 4
+        timestamp: "2026-02-20T22:15:00"
+        action: "Database maintenance"
+        description: |
+          - Dropped old IVFFlat index from pgvector
+          - Deleted all 71 existing vectors (old bad chunks)
+          - Database ready for fresh document upload with improved chunking
+
+      - order: 5
+        timestamp: "2026-02-20T22:30:00"
+        action: "React UI redesign (dark → light theme)"
+        description: |
+          Redesigned the entire React frontend from dark theme to light theme
+          matching the code.html reference design. No functionality changes.
+          Design system: light bg (#f5f7f8), primary blue (#0d6cf2), Inter font,
+          rounded cards, shadows, sticky header.
+        files_changed:
+          - RAG/index.html (added Inter font, updated title to SellBot AI)
+          - RAG/src/index.css (light theme prose styles, scrollbar)
+          - RAG/tailwind.config.js (light theme color tokens)
+          - RAG/src/App.tsx (added header with logo, nav icons, avatar)
+          - RAG/src/components/chat/Sidebar.tsx (white bg, blue active states)
+          - RAG/src/components/chat/ChatWindow.tsx (hero empty state, FAQ cards, footer)
+          - RAG/src/components/chat/InputBox.tsx (search bar style, shadow-xl)
+          - RAG/src/components/chat/MessageBubble.tsx (light theme, blue user bubbles)
+          - RAG/src/components/chat/UploadButton.tsx (added variant prop, light theme)
+        additional_fixes:
+          - Fixed constants.ts enum → const for erasableSyntaxOnly compatibility
+          - Fixed SyntaxHighlighter ref type error in MessageBubble
+
+      - order: 6
+        timestamp: "2026-02-20T23:50:00"
+        action: "Generated real estate test documents"
+        description: |
+          Created 14 real estate documents for RAG testing:
+          - 10 PDFs (property brochures, market report)
+          - 2 XLSX (property comparison, price trends)
+          - 2 DOCX (buying guide, amenities specification)
+          - 1 multi-page PDF (Sunrise Heights, 4 pages)
+          All saved to real_estate_documents/ folder.
+        files_changed:
+          - generate_docs.py (created)
+          - real_estate_documents/ (14 files generated)
+
+      - order: 7
+        timestamp: "2026-02-20T23:58:00"
+        action: "Improved error handling in frontend"
+        description: |
+          Replaced raw HTTP error messages with user-friendly messages.
+          Added getErrorMessage() function that maps status codes to
+          natural language responses without technical jargon.
+          Removed all mentions of "backend", "server", "status code".
+        files_changed:
+          - RAG/src/components/chat/ChatWindow.tsx
+
+      - order: 8
+        timestamp: "2026-02-21T00:10:00"
+        action: "Documentation and logging setup"
+        description: |
+          Created documentation files:
+          - semantic_questions.md (40 test questions grouped by category)
+          - backend_retrieval_fixes.md (detailed fix documentation)
+          - error_logs/ folder with error_seetha_logs_20260220.yml
+          - session_logs/ folder with session_seetha_logs.yml
+        files_changed:
+          - semantic_questions.md
+          - backend_retrieval_fixes.md
+          - error_logs/error_seetha_logs_20260220.yml
+          - session_logs/session_seetha_logs.yml
+
+      - order: 9
+        timestamp: "2026-02-21T10:50:00"
+        action: "Fixed query phrasing sensitivity in retrieval"
+        description: |
+          User discovered that identical semantic queries returned different results:
+          - "Give me the information about 3BHK Duplex" → no results
+          - "What is the 3 BHK Duplex?" → correct answer
+          Root cause: similarity_threshold was 0.5 (too strict) and no query normalization.
+          Fixes applied:
+          1. Lowered similarity_threshold from 0.5 → 0.15
+          2. Added normalize_query() function to handle real estate shorthand
+             (BHK spacing, sqft, Crores/Lakhs, Rs./INR variants)
+          3. Improved "no results" message to guide user to rephrase or upload docs
+          4. Increased top_k from 5 → 10 for wider retrieval net
+          5. Improved system prompt to instruct LLM to read ALL chunks
+        files_changed:
+          - config.py (similarity_threshold 0.5 → 0.15, top_k 5 → 10)
+          - app.py (added normalize_query, wired into /query endpoint)
+        error_ref: "ERR_009, ERR_010"
+
+  - session_id: SESSION_002
+    date: "2026-02-20"
+    duration: "~2 hours"
+    summary: "Knowledge base docs, prompt improvement, upload UI fix, backend restructure to production layout"
+
+    activities:
+
+      - order: 10
+        timestamp: "2026-02-20T12:00:00"
+        action: "Moved MD files to knowledge_base folder"
+        description: |
+          Organized documentation by moving root-level MD files to knowledge_base/:
+          - semantic_questions.md → knowledge_base/
+          - backend_retrieval_fixes.md → knowledge_base/
+          - SELLBOT_SYSTEM_ARCHITECTURE.md → knowledge_base/
+          CLAUDE.md and README.md remained in root.
+        files_moved:
+          - semantic_questions.md → knowledge_base/semantic_questions.md
+          - backend_retrieval_fixes.md → knowledge_base/backend_retrieval_fixes.md
+          - SELLBOT_SYSTEM_ARCHITECTURE.md → knowledge_base/SELLBOT_SYSTEM_ARCHITECTURE.md
+
+      - order: 11
+        timestamp: "2026-02-20T12:20:00"
+        action: "Created knowledge base MD files"
+        description: |
+          Created two educational documents explaining RAG internals:
+          1. chunks_explained.md - What chunks are, how the pipeline creates them,
+             why same document appears multiple times in sources, chunk overlap
+          2. similarity_percentage_explained.md - What the match % means, how cosine
+             similarity works, real scores from "Parking" query (49-58%), how top_k
+             and threshold control what reaches the LLM
+        files_created:
+          - knowledge_base/chunks_explained.md
+          - knowledge_base/similarity_percentage_explained.md
+
+      - order: 12
+        timestamp: "2026-02-20T12:45:00"
+        action: "Improved system prompt (v1 → v2)"
+        description: |
+          Upgraded the RAG system prompt in config.py with 9 instructions:
+          1. Read ALL context chunks (fixes 3 BHK Duplex missed answer issue)
+          2. Cite property names in answers (no more ambiguous "The price is...")
+          3. Organize multi-property answers by property with bullet points
+          4. Handle conflicting data from different sources
+          5. Use markdown formatting (bold, bullets, tables)
+          6. Be specific with numbers (exact prices, areas, counts)
+          7. Prioritize higher relevance chunks
+          8. No repetition across overlapping chunks
+          9. Graceful "not found" response with guidance
+          Also increased max_tokens from 1000 → 2048 for multi-property answers.
+          Created prompt_engineering.md documenting why each instruction exists.
+        files_changed:
+          - config.py (system_prompt v2, max_tokens 1000 → 2048)
+        files_created:
+          - knowledge_base/prompt_engineering.md
+
+      - order: 13
+        timestamp: "2026-02-20T13:00:00"
+        action: "Fixed upload button alignment in React UI"
+        description: |
+          User reported upload icon was below the input box instead of inline.
+          Root cause: InputBox had disclaimer text inside its fragment, and flex
+          container used items-end alignment.
+          Fixes:
+          1. Moved disclaimer text from InputBox to ChatWindow (outside flex row)
+          2. Changed flex from items-end to items-center
+          3. Added border-2 with blue hover effect to upload button
+        files_changed:
+          - RAG/src/components/chat/InputBox.tsx (removed disclaimer, just input div)
+          - RAG/src/components/chat/ChatWindow.tsx (disclaimer moved here, items-center)
+          - RAG/src/components/chat/UploadButton.tsx (border-2 + hover:border-primary)
+
+      - order: 14
+        timestamp: "2026-02-20T13:30:00"
+        action: "Restructured backend to production layout"
+        description: |
+          Moved all Python modules into a proper package structure:
+          - Created src/ package with __init__.py
+          - Moved embeddings.py, vector_databases.py, document_parsers.py → src/
+          - Extracted from app.py → src/models.py (Pydantic models)
+          - Extracted from app.py → src/llm.py (LLM client factory + generate_answer)
+          - Extracted from app.py → src/query_utils.py (normalize_query)
+          - Created scripts/ directory
+          - Moved simple_rag.py, inspect_db.py, inspect_faiss.py, pinecone_rag.py, generate_docs.py → scripts/
+          - Updated all imports in app.py and scripts/inspect_db.py
+          - generate_answer() now takes llm_client as explicit parameter
+          - app.py slimmed from 519 → 310 lines
+          - Deleted stale root __pycache__/
+          - Updated CLAUDE.md with new structure
+          Verified: uvicorn app:app starts cleanly, all endpoints registered.
+        files_moved:
+          - embeddings.py → src/embeddings.py
+          - vector_databases.py → src/vector_databases.py
+          - document_parsers.py → src/document_parsers.py
+          - simple_rag.py → scripts/simple_rag.py
+          - inspect_db.py → scripts/inspect_db.py
+          - inspect_faiss.py → scripts/inspect_faiss.py
+          - pinecone_rag.py → scripts/pinecone_rag.py
+          - generate_docs.py → scripts/generate_docs.py
+        files_created:
+          - src/__init__.py
+          - src/models.py
+          - src/llm.py
+          - src/query_utils.py
+        files_changed:
+          - app.py (refactored imports, removed extracted code)
+          - scripts/inspect_db.py (updated imports with sys.path)
+          - CLAUDE.md (updated to reflect new structure)
+
+      - order: 15
+        timestamp: "2026-02-20T14:40:00"
+        action: "Updated README.md, CLAUDE.md, session logs, error logs"
+        description: |
+          Updated all documentation to reflect current state:
+          - README.md: new project structure with src/ and scripts/
+          - CLAUDE.md: already updated during restructure
+          - session_logs: added SESSION_002 with activities 10-15
+          - error_logs: added ERR_011 (upload button alignment)
+
+    current_state:
+      backend:
+        status: "production-ready structure"
+        structure: "app.py + config.py in root, core modules in src/, scripts in scripts/"
+        chunking: "sentence-boundary splitting (800 chars, 200 overlap)"
+        embedding_model: "BAAI/bge-large-en-v1.5 (1024 dims)"
+        vector_db: "pgvector with HNSW index"
+        llm: "Gemini Flash"
+        similarity_threshold: 0.15
+        top_k: 10
+        max_tokens: 2048
+        system_prompt: "v2 — 9 instructions for structured, cited, markdown answers"
+        query_normalization: "enabled (BHK, sqft, Crores, Lakhs, Rs.)"
+      frontend:
+        status: "redesigned (light theme)"
+        theme: "light (#f5f7f8 bg, #0d6cf2 primary)"
+        framework: "React 19 + TypeScript + Vite 7 + Tailwind CSS"
+        upload_button: "inline with input, blue hover border"
+        error_handling: "user-friendly messages, no technical jargon"
+      documents:
+        location: "real_estate_documents/"
+        total_files: 14
+        formats: "10 PDF, 2 XLSX, 2 DOCX"
+        uploaded_to_rag: true
+      knowledge_base:
+        files:
+          - chunks_explained.md
+          - similarity_percentage_explained.md
+          - similarity_threshold_explained.md
+          - prompt_engineering.md
+          - semantic_questions.md
+          - backend_retrieval_fixes.md
+          - SELLBOT_SYSTEM_ARCHITECTURE.md
+
+    pending_tasks:
+      - "Test with new v2 system prompt for answer quality"
+      - "Run semantic questions to verify retrieval after all fixes"

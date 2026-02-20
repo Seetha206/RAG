@@ -1,0 +1,43 @@
+# =============================================================================
+# RAG API - Complete Requirements
+# Install with: pip install -r requirements_api.txt
+# =============================================================================
+
+# Core dependencies (from simple_rag.py)
+google-genai
+sentence-transformers
+faiss-cpu
+python-dotenv
+numpy
+
+# FastAPI and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart  # Required for file uploads
+
+# Document parsing
+PyPDF2>=3.0.0  # PDF parsing (simple, reliable)
+pdfplumber>=0.10.0  # PDF parsing (better for tables) - Optional
+python-docx>=1.0.0  # DOCX parsing
+openpyxl>=3.1.0  # Excel parsing
+pandas>=2.0.0  # Excel to text conversion
+
+# Additional vector databases (optional - install as needed)
+psycopg2-binary>=2.9.0  # For pgvector (PostgreSQL with vector extension)
+# chromadb>=0.4.0  # Uncomment if using ChromaDB
+# pinecone-client>=2.2.0  # Uncomment if using Pinecone
+# weaviate-client>=3.25.0  # Uncomment if using Weaviate
+# qdrant-client>=1.6.0  # Uncomment if using Qdrant
+
+# Additional embedding providers (optional - install as needed)
+# openai>=1.3.0  # Uncomment if using OpenAI embeddings
+# cohere>=4.30.0  # Uncomment if using Cohere embeddings
+
+# Additional LLM providers (optional - install as needed)
+# openai>=1.3.0  # Uncomment if using OpenAI LLMs (GPT-4, GPT-3.5)
+# anthropic>=0.7.0  # Uncomment if using Claude
+
+# Development tools (optional)
+# pytest>=7.4.0  # For testing
+# black>=23.10.0  # Code formatting
+# pylint>=3.0.0  # Code linting
