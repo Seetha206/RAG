@@ -1,4 +1,3 @@
-const DEMO_URL = 'https://rag-tau-six.vercel.app/';
 
 /* ── Icons (inline SVG) ────────────────────────────────────────── */
 const SparkleIcon = () => (
@@ -33,9 +32,6 @@ function Nav() {
           <a href="#what-is-rag" className="nav-link">What is RAG?</a>
           <a href="#pipeline" className="nav-link">How it works</a>
           <a href="#tech" className="nav-link">Tech stack</a>
-          <a href={DEMO_URL} target="_blank" rel="noopener" className="btn btn-primary nav-cta">
-            Live Demo <ExternalLink />
-          </a>
         </div>
       </div>
     </nav>
@@ -65,9 +61,6 @@ function Hero() {
         </p>
 
         <div className="hero-actions">
-          <a href={DEMO_URL} target="_blank" rel="noopener" className="btn btn-primary">
-            Try Live Demo <ExternalLink />
-          </a>
           <a href="#what-is-rag" className="btn btn-outline">
             How it works <ArrowRight />
           </a>
@@ -361,7 +354,7 @@ function CTASection() {
             <div className="demo-dot" style={{ background: '#ef4444' }} />
             <div className="demo-dot" style={{ background: '#f59e0b' }} />
             <div className="demo-dot" style={{ background: '#22c55e' }} />
-            <div className="demo-card-url">rag-tau-six.vercel.app</div>
+            <div className="demo-card-url">sellbot-ai.vercel.app</div>
           </div>
           <div className="demo-card-content">
             <div className="demo-ui-preview">
@@ -383,10 +376,7 @@ function CTASection() {
         </div>
 
         <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
-          <a href={DEMO_URL} target="_blank" rel="noopener" className="btn btn-primary" style={{ fontSize: '15px', padding: '14px 32px' }}>
-            Open Live Demo <ExternalLink />
-          </a>
-          <a href="https://github.com/Seetha206/RAG" target="_blank" rel="noopener" className="btn btn-outline">
+          <a href="https://github.com/Seetha206/RAG" target="_blank" rel="noopener" className="btn btn-primary" style={{ fontSize: '15px', padding: '14px 32px' }}>
             View on GitHub <ArrowRight />
           </a>
         </div>
@@ -401,8 +391,7 @@ function Footer() {
     <footer className="footer">
       <div className="container">
         <p className="footer-text">
-          Built with ❤️ using FastAPI · pgvector · React · Gemini &nbsp;·&nbsp;{' '}
-          <a href={DEMO_URL} target="_blank" rel="noopener">Try the live demo →</a>
+          Built with ❤️ using FastAPI · pgvector · React · Gemini
         </p>
       </div>
     </footer>
