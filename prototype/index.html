@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SellBot AI — Real Estate Assistant</title>
+  <style>
+    /* ── Reset & Variables ─────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --primary:        #0d6cf2;
+      --primary-light:  #dbeafe;
+      --primary-hover:  #0b5ed7;
+      --bg-chat:        #f5f7f8;
+      --bg-white:       #ffffff;
+      --bg-hover:       #f1f5f9;
+      --text-main:      #1e293b;
+      --text-secondary: #334155;
+      --text-muted:     #64748b;
+      --text-faint:     #94a3b8;
+      --border:         #e2e8f0;
+      --border-dark:    #cbd5e1;
+      --success:        #22c55e;
+      --error:          #ef4444;
+      --shadow-input:   0 10px 40px rgba(148,163,184,.18);
+    }
+
+    html, body { height: 100%; font-family: 'Inter', system-ui, sans-serif; color: var(--text-main); background: var(--bg-white); }
+
+    /* ── Scrollbar ─────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-dark); border-radius: 8px; }
+
+    /* ── Layout ────────────────────────────────────────────── */
+    .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* Header */
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px; height: 60px; background: rgba(255,255,255,.85);
+      backdrop-filter: blur(12px); border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 50; flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .logo-box {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: var(--primary); display: grid; place-items: center;
+    }
+    .logo-box svg { color: #fff; }
+    .brand { font-size: 16px; font-weight: 700; color: var(--text-main); }
+    .header-right { display: flex; gap: 4px; }
+    .icon-btn {
+      width: 34px; height: 34px; border-radius: 8px; border: none; background: transparent;
+      cursor: pointer; display: grid; place-items: center; color: var(--text-muted);
+      transition: background .15s, color .15s;
+    }
+    .icon-btn:hover { background: var(--bg-hover); color: var(--text-main); }
+
+    /* Body */
+    .body { display: flex; flex: 1; overflow: hidden; }
+
+    /* Sidebar */
+    .sidebar {
+      width: 260px; flex-shrink: 0; background: var(--bg-white);
+      border-right: 1px solid var(--border); display: flex; flex-direction: column;
+      transition: transform .25s ease;
+    }
+    .sidebar-top { padding: 12px; border-bottom: 1px solid var(--border); }
+    .new-chat-btn {
+      width: 100%; display: flex; align-items: center; gap: 8px;
+      padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border-dark);
+      background: var(--bg-white); cursor: pointer; font-size: 14px; font-weight: 500;
+      color: var(--text-main); transition: all .15s;
+    }
+    .new-chat-btn:hover { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+    .new-chat-btn svg { color: var(--primary); }
+
+    .sidebar-list { flex: 1; overflow-y: auto; padding: 8px; }
+    .sidebar-label { font-size: 11px; font-weight: 600; color: var(--text-faint); text-transform: uppercase; letter-spacing: .06em; padding: 6px 4px 4px; }
+
+    .conv-item {
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+      border-radius: 8px; cursor: pointer; color: var(--text-secondary);
+      font-size: 13px; transition: background .12s; position: relative;
+    }
+    .conv-item.active { background: var(--primary-light); color: var(--primary); font-weight: 500; }
+    .conv-item:not(.active):hover { background: var(--bg-hover); }
+    .conv-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .sidebar-footer { padding: 12px; border-top: 1px solid var(--border); }
+    .sidebar-footer-text { font-size: 11px; color: var(--text-faint); text-align: center; }
+
+    /* Chat Window */
+    .chat-window { flex: 1; display: flex; flex-direction: column; background: var(--bg-chat); min-width: 0; }
+
+    .status-bar {
+      background: var(--bg-white); border-bottom: 1px solid var(--border);
+      padding: 6px 16px; display: flex; gap: 16px; align-items: center; flex-shrink: 0;
+    }
+    .status-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+
+    .messages { flex: 1; overflow-y: auto; padding: 20px 16px; display: flex; flex-direction: column; gap: 18px; }
+
+    /* Empty State */
+    .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; padding: 32px 16px; gap: 28px; }
+    .empty-heading { font-size: 22px; font-weight: 700; color: var(--text-main); text-align: center; max-width: 480px; line-height: 1.35; }
+    .empty-heading span { color: var(--primary); }
+    .empty-sub { font-size: 14px; color: var(--text-muted); text-align: center; max-width: 400px; line-height: 1.6; }
+
+    .faq-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; width: 100%; max-width: 680px; }
+    .faq-card {
+      background: var(--bg-white); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px 16px; cursor: pointer; display: flex; align-items: flex-start; gap: 10px;
+      transition: all .15s; text-align: left;
+    }
+    .faq-card:hover { border-color: var(--primary); box-shadow: 0 4px 16px rgba(13,108,242,.1); transform: translateY(-1px); }
+    .faq-icon { width: 32px; height: 32px; border-radius: 8px; background: var(--primary-light); display: grid; place-items: center; flex-shrink: 0; color: var(--primary); }
+    .faq-text { font-size: 13px; color: var(--text-secondary); line-height: 1.45; flex: 1; }
+    .faq-chevron { color: var(--text-faint); align-self: center; flex-shrink: 0; }
+
+    /* Message Bubbles */
+    .message { display: flex; gap: 10px; max-width: 85%; }
+    .message.user { align-self: flex-end; flex-direction: row-reverse; }
+    .message.assistant { align-self: flex-start; }
+
+    .avatar {
+      width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+      display: grid; place-items: center; margin-top: 2px;
+    }
+    .avatar.bot { background: var(--primary-light); color: var(--primary); }
+    .avatar.user-av { background: var(--primary-light); color: var(--primary); }
+
+    .bubble {
+      padding: 11px 15px; border-radius: 18px; font-size: 14px; line-height: 1.55;
+      position: relative;
+    }
+    .message.user .bubble {
+      background: var(--primary); color: #fff;
+      border-bottom-right-radius: 5px;
+    }
+    .message.assistant .bubble {
+      background: var(--bg-white); color: var(--text-main);
+      border-bottom-left-radius: 5px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.06);
+    }
+
+    /* Markdown in bubble */
+    .bubble strong { font-weight: 600; }
+    .bubble ul, .bubble ol { padding-left: 18px; margin: 6px 0; }
+    .bubble li { margin: 3px 0; }
+    .bubble p { margin: 4px 0; }
+    .bubble h3 { font-size: 14px; font-weight: 600; margin: 8px 0 4px; }
+    .bubble .tag {
+      display: inline-block; background: rgba(13,108,242,.12); color: var(--primary);
+      border-radius: 4px; padding: 1px 6px; font-size: 12px; font-weight: 500; margin: 2px 2px 2px 0;
+    }
+    .message.user .bubble .tag { background: rgba(255,255,255,.25); color: #fff; }
+
+    /* Sources */
+    .sources {
+      margin-top: 10px; border-top: 1px solid var(--border);
+      padding-top: 8px;
+    }
+    .sources-toggle {
+      display: flex; align-items: center; gap: 6px; cursor: pointer;
+      font-size: 12px; color: var(--text-muted); background: none; border: none;
+      padding: 0; transition: color .12s;
+    }
+    .sources-toggle:hover { color: var(--primary); }
+    .sources-toggle svg { transition: transform .2s; }
+    .sources-toggle.open svg { transform: rotate(90deg); }
+
+    .sources-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .source-card {
+      background: var(--bg-hover); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font-size: 12px;
+    }
+    .source-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
+    .source-name { font-weight: 600; color: var(--text-main); }
+    .source-score { color: var(--primary); font-weight: 500; }
+    .source-preview { color: var(--text-muted); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+    /* Typing indicator */
+    .typing { display: flex; gap: 10px; align-items: center; }
+    .typing-dots { display: flex; gap: 4px; padding: 12px 14px; background: var(--bg-white); border-radius: 18px; border-bottom-left-radius: 5px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .typing-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint);
+      animation: bounce 1.2s ease-in-out infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: .2s; }
+    .typing-dot:nth-child(3) { animation-delay: .4s; }
+    @keyframes bounce { 0%,60%,100% { transform: translateY(0); opacity:.4; } 30% { transform: translateY(-6px); opacity:1; } }
+
+    /* Input Area */
+    .input-area {
+      padding: 12px 16px 8px; background: var(--bg-chat); flex-shrink: 0;
+    }
+    .input-box {
+      display: flex; align-items: flex-end; gap: 8px;
+      background: var(--bg-white); border: 2px solid var(--border);
+      border-radius: 16px; padding: 10px 12px;
+      box-shadow: var(--shadow-input); transition: border-color .15s;
+    }
+    .input-box:focus-within { border-color: var(--primary); }
+    .input-icon { color: var(--text-faint); flex-shrink: 0; padding-bottom: 2px; }
+    .input-textarea {
+      flex: 1; border: none; outline: none; resize: none;
+      font-size: 14px; color: var(--text-main); line-height: 1.5;
+      min-height: 24px; max-height: 160px; background: transparent;
+      font-family: inherit;
+    }
+    .input-textarea::placeholder { color: var(--text-faint); }
+    .send-btn {
+      width: 34px; height: 34px; border-radius: 10px; border: none;
+      background: var(--primary); color: #fff; cursor: pointer;
+      display: grid; place-items: center; flex-shrink: 0;
+      transition: background .15s, opacity .15s;
+    }
+    .send-btn:hover:not(:disabled) { background: var(--primary-hover); }
+    .send-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    .chat-footer { text-align: center; font-size: 11px; color: var(--text-faint); padding: 6px 0 10px; }
+
+    /* Mobile */
+    .menu-btn { display: none; }
+
+    @media (max-width: 768px) {
+      .sidebar {
+        position: fixed; top: 60px; left: 0; bottom: 0; z-index: 40;
+        transform: translateX(-100%); box-shadow: 4px 0 20px rgba(0,0,0,.12);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .menu-btn { display: grid; }
+      .faq-grid { grid-template-columns: 1fr; }
+      .empty-heading { font-size: 18px; }
+    }
+
+    /* Overlay */
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 35; }
+    .overlay.show { display: block; }
+
+    /* Animations */
+    .message { animation: fadeUp .25s ease; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+
+    /* Upload chip */
+    .upload-chip {
+      display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+      color: var(--text-muted); border: 1px dashed var(--border-dark);
+      padding: 4px 10px; border-radius: 20px; cursor: pointer; transition: all .15s;
+    }
+    .upload-chip:hover { border-color: var(--primary); color: var(--primary); }
+
+    .processing-time { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+  </style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ── Header ─────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-left">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Toggle sidebar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="logo-box">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+      </div>
+      <span class="brand">SellBot AI</span>
+    </div>
+    <div class="header-right">
+      <button class="icon-btn" title="Help">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+      </button>
+      <button class="icon-btn" title="Settings">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+      <button class="icon-btn" title="Profile" style="background:var(--primary-light); color:var(--primary);">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="overlay" id="overlay"></div>
+
+  <div class="body">
+
+    <!-- ── Sidebar ──────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <button class="new-chat-btn" id="newChatBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+          New Chat
+        </button>
+      </div>
+      <div class="sidebar-list" id="convList">
+        <div class="sidebar-label">Recent</div>
+      </div>
+      <div class="sidebar-footer">
+        <p class="sidebar-footer-text">SellBot AI Chat · v1.0</p>
+      </div>
+    </aside>
+
+    <!-- ── Chat Window ──────────────────────────────────────── -->
+    <main class="chat-window">
+
+      <!-- Status Bar -->
+      <div class="status-bar">
+        <div class="status-item">
+          <span class="status-dot"></span>
+          <span id="statusDocs">5 documents</span>
+        </div>
+        <div class="status-item">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>
+          <span>pgvector · 384 dims</span>
+        </div>
+        <div class="status-item">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          <span>Gemini Flash · LLM</span>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div class="messages" id="messages">
+
+        <!-- Empty State (shown initially) -->
+        <div class="empty-state" id="emptyState">
+          <div class="logo-box" style="width:52px;height:52px;border-radius:14px;">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+          </div>
+          <div>
+            <h1 class="empty-heading">How can I assist your <span>real estate</span> needs today?</h1>
+            <p class="empty-sub" style="margin-top:8px;">Ask me anything about properties, pricing, amenities, and availability — I'll search through all uploaded documents instantly.</p>
+          </div>
+
+          <label class="upload-chip" title="Upload documents (prototype — UI only)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Upload property documents
+          </label>
+
+          <div class="faq-grid" id="faqGrid">
+            <!-- injected by JS -->
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-area">
+        <div class="input-box">
+          <span class="input-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </span>
+          <textarea
+            class="input-textarea"
+            id="inputText"
+            placeholder="Ask about your documents…"
+            rows="1"
+          ></textarea>
+          <button class="send-btn" id="sendBtn" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="chat-footer">Powered by RAG Engine &nbsp;·&nbsp; SellBot AI &nbsp;·&nbsp; <em>Prototype</em></div>
+
+    </main>
+  </div>
+</div>
+
+<script>
+/* ── FAQ Data ─────────────────────────────────────────────────── */
+const FAQ = [
+  {
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
+    text: "What is the price of 3 BHK in Sunrise Heights?",
+    answer: `**Sunrise Heights Premium Apartments** — 3 BHK Pricing\n\nBased on the uploaded brochure, the 3 BHK units are priced as follows:\n\n| Unit Type | Area | Price |\n|-----------|------|-------|\n| 3 BHK Standard | 1,450 sq.ft | ₹95 lakhs |\n| 3 BHK Premium | 1,680 sq.ft | ₹1.12 crore |\n| 3 BHK Corner | 1,720 sq.ft | ₹1.18 crore |\n\n**Additional charges:**\n- Registration & stamp duty: ~6% of agreement value\n- Maintenance deposit: ₹1.5 lakhs (one-time)\n- Car parking: ₹3 lakhs per slot\n\nEMI available from ₹72,000/month (30-year tenure, 8.5% interest).`,
+    sources: [
+      { name: "Sunrise_Heights_Brochure.pdf", chunk: 3, score: 94, preview: "3 BHK units ranging from 1450 to 1720 sq.ft. Pricing starts at ₹95 lakhs for standard configurations..." },
+      { name: "Sunrise_Heights_Price_List.pdf", chunk: 1, score: 89, preview: "Updated price list Q1 2026. All prices inclusive of GST. Stamp duty and registration extra." }
+    ]
+  },
+  {
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>`,
+    text: "What amenities does Sunrise Heights offer?",
+    answer: `**Sunrise Heights** offers a comprehensive set of lifestyle amenities:\n\n**Recreation & Fitness**\n- Olympic-size swimming pool with kids' pool\n- Fully equipped gymnasium (open 5 AM – 10 PM)\n- Multi-purpose sports court (badminton, basketball)\n- Indoor games room (table tennis, billiards)\n\n**Community & Lifestyle**\n- Clubhouse with banquet hall (capacity: 250)\n- Rooftop garden & sky lounge\n- Co-working space with high-speed Wi-Fi\n- Mini theatre (40 seats)\n\n**Safety & Convenience**\n- 3-tier security with CCTV surveillance\n- Video door phone in every unit\n- 24×7 power backup (100%)\n- EV charging stations in parking\n- Supermarket & pharmacy on ground floor`,
+    sources: [
+      { name: "Sunrise_Heights_Brochure.pdf", chunk: 7, score: 97, preview: "World-class amenities spread across 2 acres of landscaped area. Clubhouse, swimming pool, gymnasium..." },
+      { name: "Sunrise_Heights_Master_Plan.pdf", chunk: 2, score: 81, preview: "Amenity block located at the center of the complex for easy access from all towers." }
+    ]
+  },
+  {
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>`,
+    text: "Which projects are available under ₹60 lakhs?",
+    answer: `Here are all projects with units priced **under ₹60 lakhs**:\n\n**1. Green Valley Residences** <span class="tag">Ready to Move</span>\n- 1 BHK: 580 sq.ft — **₹38 lakhs**\n- 2 BHK: 920 sq.ft — **₹54 lakhs**\n- Location: Whitefield, Bangalore\n\n**2. Horizon Park Phase 2** <span class="tag">Under Construction</span>\n- 1 BHK: 620 sq.ft — **₹42 lakhs**\n- 2 BHK: 980 sq.ft — **₹57.5 lakhs**\n- Possession: December 2026\n\n**3. Metro Edge Apartments** <span class="tag">New Launch</span>\n- Studio: 380 sq.ft — **₹28 lakhs**\n- 1 BHK: 610 sq.ft — **₹41 lakhs**\n- 500 m from metro station\n\n> Prices are base rates. Taxes, registration, and parking charges are additional.`,
+    sources: [
+      { name: "Green_Valley_Residences.pdf", chunk: 2, score: 92, preview: "Affordable housing project with 1 BHK starting ₹38 lakhs. RERA registered: KA/RERA/..." },
+      { name: "Horizon_Park_Phase2.pdf", chunk: 1, score: 88, preview: "Phase 2 launched with special early-bird pricing valid until March 2026." },
+      { name: "Metro_Edge_Apartments.pdf", chunk: 4, score: 83, preview: "Strategically located near metro station. Studio and 1 BHK configurations available." }
+    ]
+  },
+  {
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`,
+    text: "What is the possession date for Sunrise Heights?",
+    answer: `**Sunrise Heights** — Possession Schedule\n\n| Tower | Total Units | Possession Date | Status |\n|-------|-------------|-----------------|--------|\n| Tower A | 120 units | **March 2026** | 95% complete |\n| Tower B | 120 units | **June 2026** | 82% complete |\n| Tower C | 160 units | **December 2026** | 65% complete |\n\n**RERA Registration:** KA/01/BUILD/2021/001234\n\n**Key milestones completed:**\n- ✅ Foundation & structural work\n- ✅ External cladding (Tower A & B)\n- ✅ Electrical & plumbing (Tower A)\n- 🔄 Interior finishing ongoing\n- 🔄 Landscaping in progress\n\n> Tower A buyers can expect handover starting **April 2026**. Delay compensation of ₹5/sq.ft/month as per RERA.`,
+    sources: [
+      { name: "Sunrise_Heights_Construction_Update.pdf", chunk: 1, score: 96, preview: "Q4 2025 construction progress report. Tower A at 95% completion, expected OC by February 2026." },
+      { name: "Sunrise_Heights_RERA_Filing.pdf", chunk: 3, score: 78, preview: "RERA registration KA/01/BUILD/2021/001234. Promised completion date Tower A: March 2026." }
+    ]
+  },
+  {
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+    text: "What loan and EMI options are available?",
+    answer: `**Home Loan Partners & EMI Calculator**\n\nSunrise Heights has tie-ups with leading banks offering **pre-approved loans**:\n\n**Bank Partners:**\n- HDFC Bank — 8.40% p.a. (up to 90% funding)\n- SBI — 8.50% p.a. (special schemes for women)\n- ICICI Bank — 8.45% p.a. (flexible repayment)\n- Axis Bank — 8.55% p.a. (no prepayment penalty)\n\n**EMI Examples (30-year tenure):**\n\n| Loan Amount | EMI/month |\n|-------------|----------|\n| ₹40 lakhs | ₹30,200 |\n| ₹60 lakhs | ₹45,300 |\n| ₹80 lakhs | ₹60,400 |\n| ₹1 crore | ₹75,500 |\n\n**Additional Schemes:**\n- Subvention scheme: Pay 10% now, rest on possession\n- NRI loan assistance available\n- Tax benefit under Section 80C & 24(b)`,
+    sources: [
+      { name: "Sunrise_Heights_Payment_Plans.pdf", chunk: 5, score: 91, preview: "Home loan assistance desk available at the sales office. Tie-ups with 8 nationalised and private banks." },
+      { name: "Sunrise_Heights_Brochure.pdf", chunk: 9, score: 84, preview: "Subvention scheme available: Pay 10% at booking, 10% at agreement, balance on possession." }
+    ]
+  },
+  {
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`,
+    text: "Where is Sunrise Heights located?",
+    answer: `**Sunrise Heights** is located at **Sarjapur Road, Bangalore — 560102**\n\n**Connectivity:**\n- 2 km from Outer Ring Road\n- 8 km from Marathahalli\n- 12 km from Whitefield\n- 15 km from Electronic City\n- Nearest metro (proposed): 3 km — Sarjapur Station (Phase 3)\n\n**Nearby Social Infrastructure:**\n\n| Category | Name | Distance |\n|----------|------|----------|\n| Hospital | Sakra World Hospital | 2.5 km |\n| School | Greenwood High | 1.8 km |\n| Mall | Soul Space Spirit | 4 km |\n| IT Park | RMZ Ecospace | 5 km |\n| Airport | Kempegowda Intl. | 42 km |\n\n**Google Maps:** The project is accessible from both Sarjapur Main Road and Carmelaram Road, offering multiple route options during peak hours.`,
+    sources: [
+      { name: "Sunrise_Heights_Location_Map.pdf", chunk: 1, score: 98, preview: "Site located at Survey No. 45/2, Sarjapur Hobli, Bangalore South Taluk. Total site area: 4.2 acres." },
+      { name: "Sunrise_Heights_Brochure.pdf", chunk: 2, score: 87, preview: "Connectivity advantage: Located on Sarjapur Road, one of Bangalore's fastest growing corridors." }
+    ]
+  }
+];
+
+/* ── State ───────────────────────────────────────────────────── */
+let conversations = [];
+let activeChatId = null;
+let isTyping = false;
+
+/* ── DOM refs ────────────────────────────────────────────────── */
+const messagesEl   = document.getElementById('messages');
+const emptyState   = document.getElementById('emptyState');
+const inputText    = document.getElementById('inputText');
+const sendBtn      = document.getElementById('sendBtn');
+const faqGrid      = document.getElementById('faqGrid');
+const convList     = document.getElementById('convList');
+const newChatBtn   = document.getElementById('newChatBtn');
+const sidebar      = document.getElementById('sidebar');
+const overlay      = document.getElementById('overlay');
+const menuBtn      = document.getElementById('menuBtn');
+
+/* ── Render FAQ cards ────────────────────────────────────────── */
+FAQ.forEach((item, i) => {
+  const card = document.createElement('button');
+  card.className = 'faq-card';
+  card.innerHTML = `
+    <div class="faq-icon">${item.icon}</div>
+    <span class="faq-text">${item.text}</span>
+    <span class="faq-chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></span>
+  `;
+  card.addEventListener('click', () => askQuestion(item.text, i));
+  faqGrid.appendChild(card);
+});
+
+/* ── New Chat ────────────────────────────────────────────────── */
+function startNewChat() {
+  activeChatId = Date.now();
+  conversations.unshift({ id: activeChatId, title: 'New conversation', messages: [] });
+  renderConvList();
+  clearMessages();
+}
+
+newChatBtn.addEventListener('click', () => { startNewChat(); closeSidebar(); });
+
+/* ── Conversation List ───────────────────────────────────────── */
+function renderConvList() {
+  convList.innerHTML = '<div class="sidebar-label">Recent</div>';
+  conversations.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'conv-item' + (c.id === activeChatId ? ' active' : '');
+    el.innerHTML = `
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <span class="conv-title">${c.title}</span>
+    `;
+    el.addEventListener('click', () => { activeChatId = c.id; renderConvList(); closeSidebar(); });
+    convList.appendChild(el);
+  });
+}
+
+/* ── Ask a question ──────────────────────────────────────────── */
+function askQuestion(text, faqIndex) {
+  if (isTyping) return;
+  if (!activeChatId) startNewChat();
+
+  // Update conversation title
+  const conv = conversations.find(c => c.id === activeChatId);
+  if (conv && conv.title === 'New conversation') {
+    conv.title = text.length > 38 ? text.slice(0, 38) + '…' : text;
+    renderConvList();
+  }
+
+  hideEmpty();
+  addUserMessage(text);
+  showTyping();
+  closeSidebar();
+
+  const delay = 800 + Math.random() * 700;
+  setTimeout(() => {
+    removeTyping();
+    const faq = FAQ[faqIndex !== undefined ? faqIndex : Math.floor(Math.random() * FAQ.length)];
+    addBotMessage(faq.answer, faq.sources, delay);
+  }, delay + 600);
+}
+
+/* ── Message helpers ─────────────────────────────────────────── */
+function hideEmpty() {
+  if (emptyState) emptyState.style.display = 'none';
+}
+
+function clearMessages() {
+  messagesEl.innerHTML = '';
+  messagesEl.appendChild(emptyState);
+  emptyState.style.display = '';
+}
+
+function addUserMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'message user';
+  el.innerHTML = `
+    <div class="avatar user-av">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    </div>
+    <div class="bubble">${escHtml(text)}</div>
+  `;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+function showTyping() {
+  isTyping = true;
+  const el = document.createElement('div');
+  el.className = 'typing'; el.id = 'typingEl';
+  el.innerHTML = `
+    <div class="avatar bot">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+    </div>
+    <div class="typing-dots">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>
+  `;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+function removeTyping() {
+  isTyping = false;
+  const el = document.getElementById('typingEl');
+  if (el) el.remove();
+}
+
+function addBotMessage(mdText, sources, ms) {
+  const el = document.createElement('div');
+  el.className = 'message assistant';
+  const processTime = (ms / 1000).toFixed(2);
+
+  el.innerHTML = `
+    <div class="avatar bot">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg>
+    </div>
+    <div>
+      <div class="bubble">${renderMarkdown(mdText)}</div>
+      <div class="processing-time">Processed in ${processTime}s · ${sources.length} source${sources.length > 1 ? 's' : ''} found</div>
+      <div class="sources">
+        <button class="sources-toggle" id="src-${Date.now()}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          View sources (${sources.length})
+        </button>
+        <div class="sources-list" style="display:none;"></div>
+      </div>
+    </div>
+  `;
+
+  // populate sources
+  const srcList = el.querySelector('.sources-list');
+  sources.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'source-card';
+    card.innerHTML = `
+      <div class="source-card-top">
+        <span class="source-name">📄 ${s.name} · Chunk ${s.chunk}</span>
+        <span class="source-score">${s.score}% match</span>
+      </div>
+      <div class="source-preview">${s.preview}</div>
+    `;
+    srcList.appendChild(card);
+  });
+
+  // toggle sources
+  const toggle = el.querySelector('.sources-toggle');
+  toggle.addEventListener('click', () => {
+    const open = srcList.style.display === 'flex' || srcList.style.display === '';
+    srcList.style.display = open ? 'none' : 'flex';
+    srcList.style.flexDirection = 'column';
+    srcList.style.gap = '6px';
+    toggle.classList.toggle('open', !open);
+  });
+
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+/* ── Basic Markdown Renderer ─────────────────────────────────── */
+function renderMarkdown(text) {
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')  // escape first
+    .replace(/&lt;span class="tag"&gt;(.*?)&lt;\/span&gt;/g, '<span class="tag">$1</span>') // re-allow tags
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/^### (.*)/gm, '<h3>$1</h3>')
+    .replace(/^> (.*)/gm, '<blockquote style="border-left:3px solid var(--primary);padding-left:10px;color:var(--text-muted);margin:6px 0;font-size:13px;">$1</blockquote>')
+    .replace(/^- ✅ (.*)/gm, '<p style="margin:2px 0;">✅ $1</p>')
+    .replace(/^- 🔄 (.*)/gm, '<p style="margin:2px 0;">🔄 $1</p>')
+    .replace(/^- (.*)/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>)/gs, m => `<ul>${m}</ul>`)
+    .replace(/\| (.*?) \|/g, (_, row) => {
+      const cells = row.split('|').map(c => c.trim());
+      return '<tr>' + cells.map((c, i) => {
+        if (/^-+$/.test(c)) return '';
+        return `<td style="padding:4px 10px;border:1px solid var(--border);font-size:13px;">${c}</td>`;
+      }).join('') + '</tr>';
+    })
+    .replace(/(<tr>.*<\/tr>)/gs, m => `<table style="border-collapse:collapse;margin:8px 0;width:100%;">${m}</table>`)
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+}
+
+function escHtml(t) {
+  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function scrollBottom() {
+  setTimeout(() => messagesEl.scrollTop = messagesEl.scrollHeight, 50);
+}
+
+/* ── Input handling ──────────────────────────────────────────── */
+inputText.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+  sendBtn.disabled = !this.value.trim();
+});
+
+inputText.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!sendBtn.disabled) submitQuestion();
+  }
+});
+
+sendBtn.addEventListener('click', submitQuestion);
+
+function submitQuestion() {
+  const text = inputText.value.trim();
+  if (!text || isTyping) return;
+  inputText.value = '';
+  inputText.style.height = 'auto';
+  sendBtn.disabled = true;
+
+  // Find closest FAQ or use first
+  const idx = FAQ.findIndex(f => f.text.toLowerCase().includes(text.toLowerCase().slice(0,10)));
+  askQuestion(text, idx >= 0 ? idx : Math.floor(Math.random() * FAQ.length));
+}
+
+/* ── Mobile sidebar ──────────────────────────────────────────── */
+menuBtn.addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+  overlay.classList.toggle('show');
+});
+overlay.addEventListener('click', closeSidebar);
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  overlay.classList.remove('show');
+}
+</script>
+
+</body>
+</html>
