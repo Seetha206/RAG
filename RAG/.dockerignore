@@ -1,0 +1,22 @@
+# Node
+node_modules/
+dist/
+.cache/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Tests (not needed in production image)
+src/__tests__/
+coverage/

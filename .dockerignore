@@ -1,0 +1,36 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Secrets
+.env
+.env.*
+
+# Vector stores (large binary files — not needed in image)
+vector_store/
+knowledge_base.index
+*.index
+
+# Git
+.git/
+.gitignore
+
+# Node (frontend is its own Docker build)
+RAG/node_modules/
+RAG/dist/
+
+# Logs
+error_logs/
+session_logs/
+
+# Docs (not needed at runtime)
+knowledge_base/
+real_estate_documents/
+
+# IDE
+.vscode/
+.idea/
+*.swp
