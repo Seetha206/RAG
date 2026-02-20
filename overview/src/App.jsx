@@ -77,7 +77,7 @@ function Hero() {
           {[
             { value: '5+', label: 'File types supported' },
             { value: '<1s', label: 'Query response time' },
-            { value: '384', label: 'Embedding dimensions' },
+            { value: '1024', label: 'Embedding dimensions' },
             { value: '6', label: 'REST API endpoints' },
             { value: '∞', label: 'Documents uploadable' },
           ].map(s => (
@@ -170,7 +170,7 @@ const STEPS = [
   {
     num: 3, icon: '🔢',
     title: 'Embed Vectors',
-    desc: 'Each chunk converted to a 384-dim semantic vector by all-MiniLM-L6-v2.',
+    desc: 'Each chunk converted to a 1024-dim semantic vector by BAAI/bge-large-en-v1.5.',
     tag: 'sentence-transformers',
   },
   {
