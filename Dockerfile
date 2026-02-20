@@ -20,12 +20,9 @@ COPY requirements_api.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements_api.txt
 
-# Pre-download the embedding model (BAAI/bge-large-en-v1.5 ~1.3 GB).
-# Baked into the image so the first API request is instant.
-RUN python -c "\
-from sentence_transformers import SentenceTransformer; \
-SentenceTransformer('BAAI/bge-large-en-v1.5'); \
-print('Embedding model downloaded successfully')"
+# NOTE: Model (BAAI/bge-large-en-v1.5, ~1.3 GB) downloads at first startup.
+# Pre-downloading here causes Railway build timeouts.
+# First server startup takes ~2-3 min while the model downloads — subsequent starts are instant.
 
 # Copy application code
 COPY app.py config.py ./
