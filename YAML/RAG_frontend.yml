@@ -1,0 +1,842 @@
+################################################################################
+# RAG FRONTEND — Complete System Reference
+# Project: SellBot AI — React Chat Interface
+# Stack: React 19 · TypeScript · Vite · Tailwind CSS · Redux Toolkit · Axios
+################################################################################
+
+project:
+  name: SellBot RAG Frontend
+  description: >
+    Full-featured React chat application for the SellBot RAG backend.
+    Allows users to upload real estate documents and ask natural-language queries.
+    Includes authentication, organization management, conversation history,
+    markdown rendering, and file upload with progress feedback.
+  location: RAG/  # directory relative to project root
+  dev_port: 3000
+  api_target: http://localhost:8000  # backend
+
+# ==============================================================================
+# TECH STACK
+# ==============================================================================
+
+tech_stack:
+  runtime:
+    react: "19.2.0"
+    react_dom: "19.2.0"
+    typescript: "5.9.3"
+    node_required: ">=18"
+
+  build_tool:
+    vite: "7.3.1"
+    plugin: "@vitejs/plugin-react 5.1.1"
+
+  styling:
+    tailwindcss: "3.4.19"
+    approach: Utility-first with custom design tokens
+    fonts: Inter (Google Fonts)
+
+  state_management:
+    redux_toolkit: "2.11.2"
+    react_redux: "9.2.0"
+    redux_persist: "6.0.0"
+    persistence_storage: localStorage
+
+  routing:
+    react_router_dom: "7.13.0"
+
+  http:
+    axios: "1.13.5"
+    timeout_default: 30000ms
+    timeout_upload: 120000ms
+
+  forms:
+    react_hook_form: "7.71.1"
+    resolvers: "@hookform/resolvers 5.2.2"
+    validation: "zod 4.3.6"
+
+  content_rendering:
+    react_markdown: "10.1.0"
+    remark_gfm: "4.0.1"
+    react_syntax_highlighter: "16.1.0"
+    syntax_theme: Prism
+
+  ui_icons: lucide-react 0.574.0
+  notifications: react-toastify 11.0.5
+
+  testing:
+    runner: "vitest 4.0.18"
+    dom: jsdom
+    testing_library: "@testing-library/react 16.3.2"
+    user_events: "@testing-library/user-event"
+    api_mocking: "msw 2.12.10 (Mock Service Worker)"
+    setup_file: src/__tests__/setup.ts
+    test_utils: src/__tests__/test-utils.tsx  # custom render() with Redux + MemoryRouter
+
+  linting:
+    eslint: "9.39.1"
+    config: eslint.config.js (ESLint 9 flat config)
+    typescript_support: true
+
+  formatting:
+    prettier: "3.8.1"
+    config: .prettierrc
+    settings:
+      tab_width: 2
+      single_quote: true
+      trailing_comma: all
+
+# ==============================================================================
+# DIRECTORY STRUCTURE
+# ==============================================================================
+
+directory_structure:
+  src/:
+    App.tsx: Root component with router setup
+    main.tsx: React DOM render entry point
+    index.css: Tailwind base imports
+
+    components/:
+      chat/:
+        ChatWindow.tsx: Main RAG chat UI with conversation, upload zone, status bar
+        InputBox.tsx: Auto-resizing textarea with Enter-to-send
+        MessageBubble.tsx: Markdown message with sources, copy-to-clipboard, timestamps
+        Sidebar.tsx: Conversation list with delete and new chat
+        UploadButton.tsx: Document upload button (icon or prominent variant)
+      common/:
+        Button/Button.tsx: Reusable button (variants + sizes + loading state)
+      layout/:
+        Layout wrappers for page structure
+
+    pages/:
+      Page-level components (one per route)
+
+    store/:
+      store.ts: Redux store config with redux-persist
+      slices/:
+        authSlice.ts: Authentication state
+        chatSlice.ts: Conversation and message state
+        organizationSlice.ts: Organization management state
+        profileSlice.ts: User profile state
+        uiSlice.ts: Modal/popup visibility state
+
+    services/api/:
+      axiosConfig.ts: Configured axios instance with base URL and interceptors
+      urls.ts: All API URL constants (AUTH, USER, ORG, RAG)
+      authService.ts: Authentication API calls
+      userService.ts: User profile and session API calls
+      ragService.ts: RAG query, upload, and status API calls
+
+    routes/:
+      routeNames.ts: Centralized route path constants
+
+    types/:
+      rag.types.ts: RAG-specific types (QueryRequest, QueryResponse, etc.)
+      auth.types.ts: Auth types (UserInfo, LoginCredentials, AuthTokens)
+      chat.types.ts: Chat types (Message, Conversation)
+      org.types.ts: Organization types (OrgInfo, OrgMember)
+      api.types.ts: Generic API response wrappers (ApiResponse<T>, PaginatedResponse<T>)
+
+    hooks/:
+      redux.ts: Typed useAppDispatch and useAppSelector hooks
+
+    utils/:
+      alerts.ts: Toast notification helpers
+      constants.ts: App-wide constants
+      helpers.ts: Utility functions
+      validation.ts: Zod schemas and validators
+
+    functions/:
+      static_variable.ts: Exports server_url, login_url, app_name
+      Utils.ts: Environment-aware URL resolver (dev/testlive/prod)
+
+    styles/:
+      global.css: Global styles
+      reset.css: CSS reset
+      variables.css: CSS custom properties
+      common.css: Shared utility classes
+
+    i18n/:
+      i18n.ts: Lightweight translation system (58 keys, no external dependency)
+
+    assets/: Static images and SVGs
+
+    __tests__/:
+      setup.ts: Vitest + @testing-library/jest-dom setup
+      test-utils.tsx: Custom render() wrapping Redux Provider + MemoryRouter
+
+# ==============================================================================
+# ROUTING
+# ==============================================================================
+
+routes:
+  public:
+    LOGIN: /login
+    SIGNUP: /signup
+    FORGOT_PASSWORD: /forgotpassword
+    RESET_PASSWORD: /resetpassword
+    ONBOARDING: /onboarding
+
+  authenticated:
+    MY_PROFILE: "/{org}/myprofile"
+    ORGANIZATION: "/{org}/organization"
+    SIGNIN_DEVICES: "/{org}/signindevices"
+    RECENT_ACTIVITY: "/{org}/recentactivity"
+    DELETE_ACCOUNT: "/{org}/deleteaccount"
+
+  notes:
+    - All authenticated routes are org-scoped (org slug in URL)
+    - routeNames.ts exports helper functions for dynamic routes
+
+# ==============================================================================
+# REDUX STORE
+# ==============================================================================
+
+redux_store:
+  persistence:
+    storage: localStorage
+    key: root
+    whitelist: [auth, chat]  # only these slices are persisted
+
+  slices:
+
+    authSlice:
+      state:
+        user: "UserInfo | null"
+        token: "string | null"
+        isAuthenticated: boolean
+        isLoading: boolean
+        error: "string | null"
+        showOtpVerification: boolean
+        userEmail: string
+      actions:
+        loginSuccess: Sets user + token + isAuthenticated = true
+        logout: Clears user + token + isAuthenticated = false
+        setLoading: Sets isLoading
+        setError: Sets error string
+        clearError: Clears error to null
+        setShowOtpVerification: Toggles OTP screen visibility
+        setUserEmail: Stores email for OTP flow
+      selectors:
+        - selectUser
+        - selectToken
+        - selectIsAuthenticated
+        - selectIsLoading
+        - selectAuthError
+        - selectShowOtpVerification
+        - selectUserEmail
+
+    chatSlice:
+      state:
+        conversations: "Conversation[]"
+        activeConversationId: "string | null"
+        isLoading: boolean
+      actions:
+        createConversation: Adds new Conversation to list
+        setActiveConversation: Sets activeConversationId
+        addMessage: Appends Message to conversation
+        deleteConversation: Removes conversation by id
+        setLoading: Sets isLoading
+        clearAllConversations: Empties conversations array
+      selectors:
+        - selectConversations
+        - selectActiveConversationId
+        - selectActiveConversation  # derived: finds active conversation object
+        - selectIsLoading
+
+    organizationSlice:
+      state:
+        currentOrg: "OrgInfo | null"
+        orgList: "OrgInfo[]"
+        members: "OrgMember[]"
+        isLoading: boolean
+        error: "string | null"
+      actions:
+        setCurrentOrg: Sets active organization
+        setOrgList: Replaces org list
+        setMembers: Replaces member list
+        setLoading: Sets isLoading
+        setError: Sets error
+        clearOrgState: Resets all to initial
+
+    profileSlice:
+      state:
+        profile: "UserInfo | null"
+        isLoading: boolean
+        error: "string | null"
+      actions:
+        setProfile: Sets profile data
+        setLoading: Sets isLoading
+        setError: Sets error
+        clearProfile: Resets all to initial
+
+    uiSlice:
+      state:
+        popups:
+          isInviteMemberOpen: boolean
+          isDeleteConfirmOpen: boolean
+          isEditProfileOpen: boolean
+          isChangePasswordOpen: boolean
+          isCreateOrgOpen: boolean
+        isGlobalLoading: boolean
+      actions:
+        openPopup: "Opens popup by key name"
+        closePopup: "Closes popup by key name"
+        closeAllPopups: Closes all popups
+        setGlobalLoading: Sets global loading state
+
+# ==============================================================================
+# TYPE DEFINITIONS
+# ==============================================================================
+
+types:
+
+  UserInfo:
+    id: string
+    firstName: string
+    lastName: string
+    email: string
+    avatarUrl: "string (optional)"
+    createdAt: string
+
+  LoginCredentials:
+    email: string
+    password: string
+
+  AuthTokens:
+    token: string
+    expiresAt: string
+
+  Message:
+    id: string
+    role: "'user' | 'assistant'"
+    content: string
+    timestamp: string
+    sources: "Source[] (optional)"
+    processingTimeMs: "number (optional)"
+
+  Conversation:
+    id: string
+    title: string
+    messages: "Message[]"
+    createdAt: string
+    updatedAt: string
+
+  OrgInfo:
+    id: string
+    name: string
+    orgUrl: string
+    iconUrl: "string (optional)"
+    createdAt: string
+
+  OrgMember:
+    id: string
+    userId: string
+    orgId: string
+    role: string
+    status: string
+    email: string
+    firstName: string
+    lastName: string
+
+  QueryRequest:
+    question: string
+    top_k: "number (optional)"
+
+  Source:
+    text: string
+    filename: string
+    chunk_index: number
+    similarity_score: number
+
+  QueryResponse:
+    question: string
+    answer: string
+    sources: "Source[]"
+    processing_time_ms: number
+
+  UploadResponse:
+    status: string
+    message: string
+    document_id: string
+    filename: string
+    file_info: object
+    chunks_added: number
+    total_chunks: number
+    processing_time_ms: number
+
+  StatusResponse:
+    status: string
+    total_documents: number
+    total_chunks: number
+    embedding_model: string
+    vector_db_provider: string
+    llm_model: string
+
+  ApiResponse_T:
+    success: boolean
+    data: T
+    message: "string (optional)"
+    error: "string (optional)"
+
+  PaginatedResponse_T:
+    extends: "ApiResponse<T>"
+    total: number
+    page: number
+    pageSize: number
+
+# ==============================================================================
+# API SERVICES
+# ==============================================================================
+
+api_services:
+
+  base_config:
+    base_url: "from static_variable.server_url (env-resolved)"
+    timeout: 30000ms
+    default_headers:
+      Content-Type: application/json
+    methods: [get<T>, post<T>, put<T>, delete<T>]
+
+  url_constants:
+    AUTH_URLS:
+      SIGNIN: /auth/signin
+      SIGNOUT: /auth/signout
+      SIGNUP: /auth/signup
+      FORGOT_PASSWORD: /auth/forgot-password
+      RESET_PASSWORD: /auth/reset-password
+      VERIFY_OTP: /auth/verify-otp
+
+    USER_URLS:
+      GET_USER: /user
+      UPDATE_PROFILE: /user/profile
+      GET_SESSIONS: /user/sessions
+      DELETE_SESSION: "/user/sessions/{id}"
+      DELETE_ACCOUNT: /user/account
+
+    ORG_URLS:
+      GET_ORGS: /organizations
+      GET_ORG: "/organizations/{id}"
+      CREATE_ORG: /organizations
+      UPDATE_ORG: "/organizations/{id}"
+      GET_MEMBERS: "/organizations/{orgId}/members"
+      INVITE_MEMBER: "/organizations/{orgId}/members/invite"
+      REMOVE_MEMBER: "/organizations/{orgId}/members/{memberId}"
+
+    RAG_URLS:
+      QUERY: /query
+      UPLOAD: /upload
+      STATUS: /status
+      RESET: /reset
+
+  authService:
+    postSignin:
+      method: POST
+      url: /auth/signin
+      body: "LoginCredentials{email, password}"
+      returns: "ApiResponse<{user: UserInfo, tokens: AuthTokens}>"
+    postSignout:
+      method: POST
+      url: /auth/signout
+      returns: "ApiResponse<null>"
+    postSignup:
+      method: POST
+      url: /auth/signup
+      returns: "ApiResponse<{user: UserInfo}>"
+    postForgotPassword:
+      method: POST
+      url: /auth/forgot-password
+      body: "{email: string}"
+      returns: "ApiResponse<null>"
+    postResetPassword:
+      method: POST
+      url: /auth/reset-password
+      body: "{token: string, password: string}"
+      returns: "ApiResponse<null>"
+    postVerifyOtp:
+      method: POST
+      url: /auth/verify-otp
+      body: "{email: string, otp: string}"
+      returns: "ApiResponse<{user: UserInfo, tokens: AuthTokens}>"
+
+  userService:
+    getUser:
+      method: GET
+      url: /user
+      returns: "ApiResponse<UserInfo>"
+    putProfile:
+      method: PUT
+      url: /user/profile
+      returns: "ApiResponse<UserInfo>"
+    getSessions:
+      method: GET
+      url: /user/sessions
+      returns: "ApiResponse<Session[]>"
+    deleteSession:
+      method: DELETE
+      url: "/user/sessions/{id}"
+      returns: "ApiResponse<null>"
+    deleteAccount:
+      method: DELETE
+      url: /user/account
+      returns: "ApiResponse<null>"
+
+  ragService:
+    postQuery:
+      method: POST
+      url: /query
+      body: "QueryRequest{question, top_k?}"
+      returns: QueryResponse
+    postUpload:
+      method: POST
+      url: /upload
+      body: "FormData{file: File}"
+      headers: "Content-Type: multipart/form-data (auto)"
+      timeout: 120000ms
+      returns: UploadResponse
+    getStatus:
+      method: GET
+      url: /status
+      returns: StatusResponse
+
+# ==============================================================================
+# COMPONENTS
+# ==============================================================================
+
+components:
+
+  ChatWindow:
+    location: src/components/chat/ChatWindow.tsx
+    description: Main RAG chat UI — core feature component
+    features:
+      - Conversation management (create, switch, display)
+      - Auto-scroll to latest message
+      - Status bar showing total_documents and total_chunks from /status
+      - FAQ quick-action chips (property listings, price trends, amenities, summarize)
+      - Empty state with prominent upload zone
+      - Error handling with Axios error parsing
+    sub_components:
+      - TypingIndicator: Animated dots while awaiting API response
+      - StatusBar: Shows live document/chunk counts
+      - EmptyState: Upload prompt when no conversation active
+
+  InputBox:
+    location: src/components/chat/InputBox.tsx
+    description: Message input with auto-height
+    features:
+      - Textarea auto-grows up to 200px max height
+      - Enter to submit, Shift+Enter for newline
+      - Disabled while loading
+      - Debounced height recalculation
+
+  MessageBubble:
+    location: src/components/chat/MessageBubble.tsx
+    description: Renders a single chat message
+    features:
+      - User messages: right-aligned, primary color background
+      - Assistant messages: left-aligned, white background
+      - Full Markdown rendering (remark-gfm)
+      - Syntax highlighting via react-syntax-highlighter (Prism)
+      - Collapsible sources section (shows filename + similarity score)
+      - Copy to clipboard button with check-mark feedback
+      - Processing time display (ms)
+      - Timestamp shown on hover
+
+  Sidebar:
+    location: src/components/chat/Sidebar.tsx
+    description: Conversation list panel
+    features:
+      - New chat button at top
+      - List of conversations with title and date
+      - Highlight active conversation
+      - Delete button per conversation
+      - Overflow scroll for long lists
+
+  UploadButton:
+    location: src/components/chat/UploadButton.tsx
+    description: Document upload trigger
+    variants:
+      icon: Small icon-only button (used in toolbar)
+      prominent: Large button with text (used in empty state)
+    features:
+      - Accepts: .pdf, .docx, .xlsx, .txt
+      - State machine: idle → uploading → success | error
+      - Auto-dismisses success after 3s, error after 5s
+      - Callback: "onUploadSuccess(filename: string, chunksAdded: number)"
+      - Progress feedback during upload
+
+  Button:
+    location: src/components/common/Button/Button.tsx
+    description: Base button component
+    variants: [primary, secondary, danger, ghost]
+    sizes: [small, medium, large]
+    props:
+      isLoading: Shows spinner, disables click
+      isDisabled: Prevents interaction
+      fullWidth: Stretches to container width
+      onClick: Click handler
+      type: "button | submit | reset"
+
+# ==============================================================================
+# ENVIRONMENT CONFIGURATION
+# ==============================================================================
+
+environments:
+  development:
+    file: .env.development
+    server_url: http://localhost:8000
+    login_url: "http://localhost:3000/#/login"
+  testlive:
+    file: .env.testlive
+    server_url: https://testlive.yourapp.com
+  production:
+    file: .env.production
+    server_url: https://services.yourapp.com
+
+  env_variables:
+    VITE_APP_NAME: App name displayed in UI (default 'RAG')
+    VITE_SERVER_URL: Backend API base URL
+    VITE_LOGIN_URL: Login redirect URL
+
+  url_resolution:
+    logic: src/functions/Utils.ts getServerUrl()
+    method: Checks import.meta.env.MODE and returns env-appropriate URL
+
+# ==============================================================================
+# BUILD & VITE CONFIGURATION
+# ==============================================================================
+
+build_config:
+  dev_server_port: 3000
+  build_command: "tsc -b && vite build"
+  output_dir: dist/
+
+  path_aliases:
+    "@": src/
+    "@components": src/components/
+    "@pages": src/pages/
+    "@store": src/store/
+    "@services": src/services/
+    "@utils": src/utils/
+    "@hooks": src/hooks/
+    "@types": src/types/
+    "@styles": src/styles/
+    "@assets": src/assets/
+    "@routes": src/routes/
+    "@i18n": src/i18n/
+    "@functions": src/functions/
+
+# ==============================================================================
+# TAILWIND DESIGN TOKENS
+# ==============================================================================
+
+design_tokens:
+  colors:
+    primary: "#0d6cf2"
+    chat:
+      bg: "#f5f7f8"          # Page background
+      sidebar: "#ffffff"      # Sidebar background
+      input: "#ffffff"        # Input area background
+      hover: "#f1f5f9"        # Hover state
+      border: "#e2e8f0"       # Borders and dividers
+      user_bubble: "#0d6cf2"  # User message background
+      assistant_bubble: "#ffffff"  # Assistant message background
+
+  typography:
+    font_family: Inter
+    source: Google Fonts
+
+  animations:
+    bounce_dot:
+      name: bounce-dot
+      duration: 1.4s
+      keyframes: scale 0 → 1 at 40% of animation
+      usage: TypingIndicator component (3 staggered dots)
+
+# ==============================================================================
+# INTERNATIONALISATION (i18n)
+# ==============================================================================
+
+i18n:
+  file: src/i18n/i18n.ts
+  approach: Lightweight custom (no i18next dependency)
+  total_keys: 58
+  usage: "t(key, fallback?)"
+  key_namespaces:
+    app.global.*: Common UI strings (loading, error, success, etc.)
+    app.button.*: Button labels (save, cancel, submit, etc.)
+    app.auth.*: Auth screens (login, signup, forgot password)
+    app.profile.*: Profile management strings
+    app.org.*: Organization management strings
+    app.validation.*: Form validation error messages
+
+# ==============================================================================
+# TESTING
+# ==============================================================================
+
+testing:
+  runner: Vitest
+  environment: jsdom
+  setup: src/__tests__/setup.ts  # imports @testing-library/jest-dom
+  utilities: src/__tests__/test-utils.tsx
+  custom_render: >
+    render() wraps component in Redux Provider (test store) + MemoryRouter.
+    Use this instead of @testing-library/react render() for all component tests.
+
+  api_mocking:
+    library: MSW (Mock Service Worker)
+    approach: Define handlers that intercept real HTTP calls in tests
+
+  test_patterns:
+    - "describe / it blocks (Vitest)"
+    - "expect().toBe() / toBeInTheDocument() / toHaveBeenCalled()"
+    - "vi.fn() for function mocks"
+    - "userEvent from @testing-library/user-event for interactions"
+    - "Accessibility testing via aria-* attribute assertions"
+
+  commands:
+    watch: npm run test
+    coverage: npm run test:coverage
+    ui: npm run test:ui
+    type_check: npm run type-check
+
+# ==============================================================================
+# NPM SCRIPTS
+# ==============================================================================
+
+scripts:
+  npm run dev: Vite dev server on port 3000
+  npm run build: "tsc -b && vite build"
+  npm run preview: Preview production build locally
+  npm run lint: ESLint check on TypeScript files
+  npm run lint:fix: Auto-fix linting issues
+  npm run format: Prettier format all files
+  npm run format:check: Check formatting without writing
+  npm run test: Vitest in watch mode
+  npm run test:ui: Vitest browser UI
+  npm run test:coverage: Coverage report
+  npm run type-check: TypeScript type check without emit
+
+# ==============================================================================
+# USE CASES IMPLEMENTED
+# ==============================================================================
+
+use_cases:
+
+  document_upload:
+    description: User uploads a real estate document; system embeds it for querying
+    trigger: UploadButton component (icon or prominent variant)
+    flow:
+      - User selects file (.pdf/.docx/.xlsx/.txt)
+      - ragService.postUpload(file) → POST /upload (120s timeout, multipart)
+      - Backend: parse → clean → chunk → embed → store in pgvector
+      - Frontend: shows uploading state → success with chunks_added count
+      - onUploadSuccess callback refreshes status bar
+    error_states:
+      - File too large (413)
+      - Unsupported format (400)
+      - Parsing failure (500)
+
+  rag_query:
+    description: User asks a question; system retrieves relevant chunks and generates answer
+    trigger: InputBox submit (Enter key or send button)
+    flow:
+      - User types question in InputBox
+      - chatSlice.addMessage({role: 'user', content: question})
+      - chatSlice.setLoading(true) → TypingIndicator shown
+      - ragService.postQuery({question, top_k}) → POST /query
+      - Backend: normalize → embed → vector search → filter → Gemini answer
+      - Response: chatSlice.addMessage({role: 'assistant', content: answer, sources})
+      - MessageBubble renders answer as Markdown with collapsible sources
+    empty_db_handling:
+      - If no documents: backend returns 400
+      - Frontend shows "Upload documents first" message
+
+  conversation_management:
+    description: Multiple chat sessions with history
+    flow:
+      - Sidebar shows all Conversation objects from chatSlice
+      - New Chat button → chatSlice.createConversation()
+      - Click conversation → chatSlice.setActiveConversation(id)
+      - Delete button → chatSlice.deleteConversation(id)
+      - Conversations persisted in localStorage via redux-persist
+
+  authentication_flow:
+    description: Full auth with OTP verification
+    screens:
+      - Login: email + password → POST /auth/signin
+      - Signup: registration → POST /auth/signup
+      - Forgot Password: email → POST /auth/forgot-password
+      - Reset Password: token + new password → POST /auth/reset-password
+      - OTP Verification: 6-digit code → POST /auth/verify-otp
+    state:
+      - showOtpVerification flag in authSlice toggles OTP screen
+      - userEmail stored for OTP screen display
+      - token stored in authSlice, persisted in localStorage
+
+  organization_management:
+    description: Multi-tenant organization support
+    features:
+      - Create organization → POST /organizations
+      - List members → GET /organizations/{id}/members
+      - Invite member by email → POST /organizations/{orgId}/members/invite
+      - Remove member → DELETE /organizations/{orgId}/members/{memberId}
+      - Update org details → PUT /organizations/{id}
+    ui:
+      - Invite member popup (isInviteMemberOpen in uiSlice)
+      - Delete confirm popup (isDeleteConfirmOpen in uiSlice)
+      - Create org popup (isCreateOrgOpen in uiSlice)
+
+  profile_management:
+    description: User profile editing
+    features:
+      - View/edit profile (firstName, lastName, avatarUrl)
+      - View active sessions → GET /user/sessions
+      - Revoke session → DELETE /user/sessions/{id}
+      - Delete account → DELETE /user/account
+    ui:
+      - Edit profile popup (isEditProfileOpen in uiSlice)
+      - Change password popup (isChangePasswordOpen in uiSlice)
+
+  faq_quick_actions:
+    description: Pre-built question chips in empty chat state
+    examples:
+      - "What property listings are available?"
+      - "Can you summarize this document?"
+      - "What are the price trends?"
+      - "What amenities are included?"
+    behavior: Clicking chip pre-fills InputBox and auto-submits
+
+  copy_to_clipboard:
+    description: Copy assistant message content
+    ui: Copy icon button on MessageBubble hover
+    feedback: Icon changes to checkmark for 2s after copy
+
+  markdown_rendering:
+    description: Assistant answers rendered as rich text
+    features:
+      - Headers, bold, italic, lists, tables
+      - Fenced code blocks with syntax highlighting (Prism)
+      - GitHub Flavored Markdown (remark-gfm) — strikethrough, task lists, etc.
+
+# ==============================================================================
+# ADDITIONAL FRONTENDS IN PROJECT
+# ==============================================================================
+
+other_frontends:
+
+  prototype:
+    location: prototype/index.html
+    description: Single-file vanilla HTML/CSS/JS chat UI
+    purpose: Quick demo/testing without React setup
+    api_target: http://localhost:8000
+    features:
+      - POST /query call
+      - Basic chat bubble rendering
+      - No auth, no conversation history, no upload
+
+  overview:
+    location: overview/
+    description: Standalone React 18 marketing/informational page
+    stack: React 18 (no TypeScript, no Redux)
+    purpose: SellBot AI feature overview and explainer
+    notes: No backend integration

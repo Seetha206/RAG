@@ -1,0 +1,34 @@
+# Error Logs - Seetha
+# Project: SellBot RAG System
+# Date: 2026-02-23
+
+errors:
+
+  - id: ERR_012
+    timestamp: "2026-02-23T00:00:00"
+    category: "API Key / Security"
+    description: "Gemini API key reported as leaked — 403 PERMISSION_DENIED on all /query calls"
+    root_cause: |
+      The GEMINI_API_KEY in .env was detected by Google as leaked (likely committed
+      to git history or exposed in a public location). Google automatically revokes
+      leaked keys. Every call to llm_client.models.generate_content() returned:
+      403 PERMISSION_DENIED — "Your API key was reported as leaked."
+      The error was silently wrapped as HTTP 500 by the /query endpoint's
+      except block: raise HTTPException(status_code=500, detail=f"Query error: {str(e)}")
+      so the terminal only showed "500 Internal Server Error" with no detail.
+    impact: |
+      All /query requests returned 500. System appeared to work (server started,
+      embeddings loaded, pgvector connected) but every actual query failed.
+    fix_applied: |
+      1. Diagnosed by running: curl -s -X POST http://localhost:8000/query
+         -H "Content-Type: application/json" -d '{"question":"test"}' | python3 -m json.tool
+         Response detail field showed the full 403 error message.
+      2. Generated a new Gemini API key at https://aistudio.google.com/apikey
+      3. Updated GEMINI_API_KEY in .env with new key
+      4. Restarted server — queries succeeded
+    status: "resolved"
+    prevention: |
+      - .env is already in .gitignore — keep it that way
+      - Never print or log API key values
+      - If key appears in any log/output, rotate it immediately
+      - Use: curl /query and check "detail" field for actual error — terminal only shows status code

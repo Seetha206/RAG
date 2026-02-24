@@ -32,9 +32,12 @@ Document upload (bytes stream) → `src/document_parsers.py` (in-memory parse) �
 │   ├── pinecone_rag.py       # Pinecone integration example
 │   └── generate_docs.py      # Generate test real estate documents
 ├── RAG/                      # React 19 + TypeScript + Vite + Tailwind frontend
-├── frontend/                 # Minimal vanilla HTML/CSS/JS chat UI
+├── overview/                 # Standalone React 18 informational/marketing page
+├── prototype/                # Minimal vanilla HTML/CSS/JS chat UI (single index.html)
 ├── knowledge_base/           # All documentation, guides, and architecture docs
+├── YAML/                     # Deployment and setup config files (pgvector SQL, backend/frontend YAML)
 ├── real_estate_documents/    # Generated test documents
+├── vector_store/             # FAISS index persistence directory
 ├── error_logs/               # Error tracking (YAML)
 ├── session_logs/             # Session tracking (YAML)
 └── requirements*.txt         # Python dependencies
@@ -42,23 +45,26 @@ Document upload (bytes stream) → `src/document_parsers.py` (in-memory parse) �
 
 **Key modules (in `src/`):**
 - `embeddings.py` -- `EmbeddingProvider` ABC with `LocalEmbeddings`, `OpenAIEmbeddings`, `CohereEmbeddings`; factory: `get_embedding_provider()`
-- `vector_databases.py` -- `VectorDatabase` ABC with `FAISSDatabase`, `ChromaDBDatabase`, `PineconeDatabase`, `PgVectorDatabase`; factory: `get_vector_database()`
+- `vector_databases.py` -- `VectorDatabase` ABC with `FAISSDatabase`, `ChromaDBDatabase`, `PineconeDatabase`, `PgVectorDatabase`; factory: `get_vector_database()`. Note: `config.py` lists `weaviate` and `qdrant` as options but they are **not yet implemented** in this file.
 - `document_parsers.py` -- streaming parsers (all work on `bytes`, never touch disk); entry point: `auto_detect_and_parse()`
 - `models.py` -- Pydantic models: `QueryRequest`, `QueryResponse`, `UploadResponse`, `StatusResponse`
 - `llm.py` -- `create_llm_client()` factory + `generate_answer(llm_client, query, chunks)` dispatcher
 - `query_utils.py` -- `normalize_query()` handles BHK, sqft, Crores, Lakhs, Rs/INR normalization
 
-**Current default config:** local embeddings (BAAI/bge-large-en-v1.5, 1024 dims) + pgvector + Gemini Flash LLM.
+**Current default config:** local embeddings (BAAI/bge-large-en-v1.5, 1024 dims) + pgvector + Gemini (`models/gemini-3-flash-preview`).
 
 **Global state in `app.py`:** The embedding provider, vector DB, and LLM client are initialized at module import time as module-level globals (`embedder`, `vector_db`, `llm_client`). LLM client is created via `create_llm_client()` from `src/llm.py`. The `generate_answer()` helper takes `llm_client` as an explicit parameter and dispatches to the correct LLM API based on provider.
 
-**Two frontends exist:**
-- `frontend/` -- minimal vanilla HTML/CSS/JS chat UI (calls `POST /query` at localhost:8000)
+**Three frontends exist:**
+- `prototype/` -- single `index.html` vanilla HTML/CSS/JS chat UI (calls `POST /query` at localhost:8000)
+- `overview/` -- standalone React 18 informational page (no TypeScript, no Redux)
 - `RAG/` -- full React 19 + TypeScript + Vite + Tailwind chat app with Redux Toolkit (persisted), react-router, axios. Tests via Vitest + Testing Library + MSW.
 
 ### React Frontend Architecture (RAG/)
 
-State management: Redux Toolkit with `redux-persist` (store in `src/store/`, slices in `src/store/slices/`). API calls via axios (`src/services/api/`). Routing via `react-router-dom` (`src/routes/`). Icons from `lucide-react`. Chat messages rendered with `react-markdown` + `remark-gfm` + `react-syntax-highlighter`. Form validation with `zod` + `react-hook-form`. Component structure: `src/components/chat/` (chat UI), `src/components/common/` (shared), `src/components/layout/` (layout wrappers). Tests in `src/__tests__/` using Vitest + jsdom + MSW for API mocking.
+State management: Redux Toolkit with `redux-persist` (store in `src/store/`, slices in `src/store/slices/`). API calls via axios (`src/services/api/`). Routing via `react-router-dom` (`src/routes/`). Icons from `lucide-react`. Notifications via `react-toastify`. Chat messages rendered with `react-markdown` + `remark-gfm` + `react-syntax-highlighter`. Form validation with `zod` + `react-hook-form`. Component structure: `src/components/chat/` (chat UI), `src/components/common/` (shared), `src/components/layout/` (layout wrappers). Page-level components in `src/pages/`. Custom hooks in `src/hooks/`. Shared types in `src/types/`. Utility functions in `src/utils/`. Internationalization setup in `src/i18n/`. Shared env/config helpers in `src/functions/`. Three env files: `.env.development`, `.env.production`, `.env.testlive`.
+
+**Test conventions:** Component tests are **co-located** next to their source files (e.g., `Button.test.tsx` beside `Button.tsx`). `src/__tests__/` is shared test infrastructure only: `setup.ts` (global jest-dom matchers) and `test-utils.tsx` (custom `render()` pre-wired with Redux Provider + MemoryRouter). Use `should + verb` for test descriptions. Import the custom `render` from `../__tests__/test-utils` for any component that needs Redux or routing context.
 
 ## Development Commands
 
@@ -151,6 +157,65 @@ PINECONE_API_KEY=...
 - `similarity_threshold` (default 0.15) -- minimum cosine similarity to include a chunk
 - `system_prompt` -- grounding prompt with `{context}` and `{query}` placeholders
 
+## Session & Error Logs
+
+Both log systems are **manually maintained YAML files** — the app does not write to them automatically. They are the project's institutional memory: what broke, how it was fixed, and what happened in each working session.
+
+### Error Logs (`error_logs/`)
+
+**Naming convention:** `error_{name}_logs_{YYYYMMDD}.yml`
+
+Each entry schema:
+```yaml
+errors:
+  - id: ERR_001                          # Sequential, never reuse
+    timestamp: "2026-02-20T23:45:00"
+    category: "RAG Pipeline"             # RAG Pipeline | Vector Database | Frontend | Build | RAG Retrieval
+    description: "One-line summary"
+    root_cause: |
+      Multi-line explanation of why it happened
+    impact: "What broke for the user"
+    fix_applied: "What code change resolved it"
+    files_changed:                        # Optional — list files touched
+      - src/document_parsers.py
+    status: "resolved"                   # resolved | partially_resolved | open
+    follow_up: "ERR_010"                 # Optional — links to next related error
+```
+
+**When to add an entry:** Any bug that took more than a few minutes to diagnose, or that could silently recur. Especially important for RAG quality issues (chunking, thresholds, retrieval failures) since they produce wrong answers rather than crashes.
+
+**Key errors already logged (ERR_001–ERR_011):**
+- ERR_001: Blind character chunking split sentences mid-word → rewrote `chunk_text()` with sentence-boundary splitting
+- ERR_003: IVFFlat index failed on small dataset → switched to HNSW
+- ERR_004: No similarity threshold → added `similarity_threshold=0.3` filter
+- ERR_009/010: Query phrasing sensitivity → lowered threshold to 0.15, added `normalize_query()`, raised `top_k` to 10
+- ERR_011: Upload button misaligned in flex layout → moved disclaimer out of InputBox
+
+### Session Logs (`session_logs/`)
+
+**Naming convention:** `session_{name}_logs.yml` (single file, append each session)
+
+Each entry schema:
+```yaml
+sessions:
+  - session_id: SESSION_001              # Sequential
+    date: "2026-02-20"
+    duration: "~3 hours"
+    summary: "One-line description of what the session accomplished"
+
+    activities:
+      - order: 1
+        timestamp: "2026-02-20T21:00:00"
+        action: "Short action label"
+        description: |
+          What was done in detail
+        files_changed:                    # Optional
+          - CLAUDE.md
+        outcome: "Result"                 # Optional
+```
+
+**When to add an entry:** At the end of each meaningful working session. Captures what was built, what decisions were made, and what files changed — so future sessions (and future Claude instances) can understand the project's evolution without reading every commit.
+
 ## Documentation
 
 All docs live in `knowledge_base/`:
@@ -168,3 +233,11 @@ All docs live in `knowledge_base/`:
 - `knowledge_base/prompt_engineering.md` -- system prompt design and tuning
 - `knowledge_base/semantic_questions.md` -- 40 test questions for RAG system
 - `knowledge_base/backend_retrieval_fixes.md` -- all pipeline fix documentation
+- `knowledge_base/QUICK_START.md` -- quick start guide for new developers
+- `knowledge_base/NEW_SETUP_GUIDE.md` -- updated setup instructions
+- `knowledge_base/VECTOR_DB.md` -- vector database comparison and selection
+- `knowledge_base/HNSW_vs_IVFFlat.md` -- HNSW vs IVFFlat index tradeoffs
+- `knowledge_base/RAG_IMPLEMENTATION_ALTERNATIVES.md` -- alternative implementation approaches
+- `knowledge_base/CODE_EXPLANATION.md` -- line-by-line code walkthrough
+- `knowledge_base/GEMINI.md` -- Gemini API usage notes
+- `knowledge_base/CHECKING_DATABASE.md` -- how to inspect and verify pgvector data

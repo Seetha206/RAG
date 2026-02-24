@@ -1,0 +1,614 @@
+################################################################################
+# RAG BACKEND — Complete System Reference
+# Project: SellBot AI — Real Estate Sales Operating System
+# Phase: Phase 1 (RAG Core)
+# Stack: Python 3.11+ · FastAPI · pgvector · BAAI/bge-large-en-v1.5 · Gemini
+################################################################################
+
+project:
+  name: SellBot RAG Backend
+  description: >
+    Modular Retrieval-Augmented Generation (RAG) API. Accepts document uploads
+    (PDF, DOCX, Excel, TXT), embeds them into a vector database, and answers
+    natural-language queries using an LLM grounded on the retrieved context.
+  version: "1.0.0"
+  python_version: "3.11+"
+  entry_point: app.py
+  swagger_ui: http://localhost:8000/docs
+
+# ==============================================================================
+# ARCHITECTURE
+# ==============================================================================
+
+architecture:
+  pattern: Plugin-based with Abstract Base Classes and factory functions
+  principle: >
+    Swap any provider (embedding model, vector DB, LLM) by editing config.py only.
+    No code changes needed anywhere else.
+
+  pipeline:
+    upload_flow:
+      - step: 1
+        name: Receive file
+        detail: FastAPI UploadFile streamed as bytes — never written to disk
+      - step: 2
+        name: Validate
+        detail: Check file size (max 50 MB) and extension (.pdf/.docx/.xlsx/.txt)
+      - step: 3
+        name: Parse
+        detail: auto_detect_and_parse() in src/document_parsers.py → returns plain text str
+      - step: 4
+        name: Clean
+        detail: clean_text() removes PDF artifacts, normalises whitespace
+      - step: 5
+        name: Chunk
+        detail: chunk_text() splits text (800 chars, 200 overlap, sentence-boundary aware)
+      - step: 6
+        name: Embed
+        detail: embedder.embed(chunks) → np.ndarray shape (n_chunks, 1024)
+      - step: 7
+        name: Store
+        detail: vector_db.add(embeddings, chunks, metadata) → persists to pgvector
+
+    query_flow:
+      - step: 1
+        name: Receive question
+        detail: QueryRequest{question, top_k?}
+      - step: 2
+        name: Validate
+        detail: Check non-empty; check vector DB has documents
+      - step: 3
+        name: Normalize
+        detail: normalize_query() expands real-estate shorthand (3BHK, sqft, Cr, L, Rs)
+      - step: 4
+        name: Embed query
+        detail: embedder.embed(normalized_question) → np.ndarray shape (1, 1024)
+      - step: 5
+        name: Vector search
+        detail: vector_db.search(query_embedding, top_k=10) → top-k chunks by cosine similarity
+      - step: 6
+        name: Filter
+        detail: Discard chunks with similarity_score < 0.15
+      - step: 7
+        name: Generate answer
+        detail: generate_answer(llm_client, question, chunks) → calls Gemini API
+      - step: 8
+        name: Return
+        detail: QueryResponse{question, answer, sources[], processing_time_ms}
+
+# ==============================================================================
+# FILE STRUCTURE
+# ==============================================================================
+
+file_structure:
+  app.py:
+    role: FastAPI server entry point
+    responsibilities:
+      - Registers all API routes
+      - Initialises global state at module import time (embedder, vector_db, llm_client)
+      - CORS middleware (allow all origins in dev)
+      - Document counter (in-memory, resets on restart)
+
+  config.py:
+    role: Single source of truth for all provider selection and tuning
+    sections:
+      - EMBEDDING_CONFIG
+      - VECTOR_DB_CONFIG
+      - LLM_CONFIG
+      - RAG_CONFIG
+      - DOCUMENT_CONFIG
+      - API_CONFIG
+
+  src/:
+    embeddings.py:
+      exports: EmbeddingProvider (ABC), LocalEmbeddings, OpenAIEmbeddings, CohereEmbeddings, get_embedding_provider()
+      embed_signature: "embed(texts: str | List[str]) -> np.ndarray  # shape (n, dims)"
+
+    vector_databases.py:
+      exports: VectorDatabase (ABC), FAISSDatabase, ChromaDBDatabase, PineconeDatabase, PgVectorDatabase, get_vector_database()
+      search_returns: "List[Tuple[id:str, text:str, metadata:Dict, score:float]]"
+      note: weaviate and qdrant are config options but NOT yet implemented
+
+    document_parsers.py:
+      exports: auto_detect_and_parse(), chunk_text(), clean_text(), validate_file_size(), get_file_info()
+      constraint: All parsers accept bytes and return str — never touch disk
+
+    models.py:
+      exports: QueryRequest, QueryResponse, UploadResponse, StatusResponse
+
+    llm.py:
+      exports: create_llm_client(), generate_answer()
+      note: generate_answer() takes llm_client as first explicit argument
+
+    query_utils.py:
+      exports: normalize_query()
+      transforms:
+        - "3BHK → 3 BHK"
+        - "1200sqft → 1200 sq.ft."
+        - "1.5cr → 1.5 Crores"
+        - "50L → 50 Lakhs"
+        - "INR 50 / Rs.50 → Rs. 50"
+
+  scripts/:
+    simple_rag.py: End-to-end RAG demo using FAISS + Gemini (no API server needed)
+    inspect_db.py: Inspect vector DB contents and statistics
+    inspect_faiss.py: FAISS index-specific inspection
+    pinecone_rag.py: Pinecone integration example
+    generate_docs.py: Generates sample real estate documents for testing
+
+  directories:
+    vector_store/: FAISS index persistence (faiss.index + metadata.json)
+    real_estate_documents/: Generated test PDF/DOCX/TXT/XLSX files
+    error_logs/: Manually written YAML error logs (not auto-generated by app)
+    session_logs/: Manually written YAML session logs (not auto-generated by app)
+    knowledge_base/: All documentation and architecture guides
+
+# ==============================================================================
+# CONFIGURATION (config.py)
+# ==============================================================================
+
+configuration:
+
+  embedding:
+    current_provider: local
+    current_model: BAAI/bge-large-en-v1.5
+    current_dimensions: 1024
+    providers:
+      local:
+        models:
+          - name: BAAI/bge-large-en-v1.5
+            dims: 1024
+            notes: Best quality, recommended
+          - name: all-MiniLM-L6-v2
+            dims: 384
+            notes: Fastest
+          - name: all-mpnet-base-v2
+            dims: 768
+          - name: e5-large-v2
+            dims: 1024
+        requires: sentence-transformers, torch
+        cost: free
+      openai:
+        models:
+          - name: text-embedding-3-small
+            dims: 1536
+            cost: $0.02/1M tokens
+          - name: text-embedding-3-large
+            dims: 3072
+            cost: $0.13/1M tokens
+          - name: text-embedding-ada-002
+            dims: 1536
+            cost: $0.10/1M tokens (legacy)
+        requires: openai package + OPENAI_API_KEY
+      cohere:
+        models:
+          - name: embed-english-v3.0
+            dims: 1024
+          - name: embed-multilingual-v3.0
+            dims: 1024
+            notes: 100+ languages
+        requires: cohere package + COHERE_API_KEY
+
+  vector_database:
+    current_provider: pgvector
+    providers:
+      faiss:
+        type: local in-memory (optional disk persist)
+        index_types: [IndexFlatL2, IndexFlatIP, IndexIVFFlat]
+        persist_path: ./vector_store/faiss.index
+        metadata_path: ./vector_store/metadata.json
+        similarity: 1 / (1 + L2_distance)
+        requires: faiss-cpu
+        cost: free
+      chromadb:
+        type: local embedded
+        persist_directory: ./vector_store/chromadb
+        collection_name: rag_documents
+        auto_persists: true
+        requires: chromadb package (commented in requirements)
+        cost: free
+      pinecone:
+        type: cloud
+        environment: us-east-1
+        index_name: sellbot-rag
+        similarity: native cosine
+        requires: pinecone-client package (commented) + PINECONE_API_KEY
+      pgvector:
+        type: PostgreSQL extension
+        table_name: rag_documents
+        similarity: 1 - cosine_distance
+        auto_creates_table: true (via _setup_database())
+        requires: psycopg2-binary + PostgreSQL with vector extension + PGVECTOR_CONNECTION_STRING
+        cost: hosting only
+      weaviate:
+        status: CONFIG ONLY — not implemented in vector_databases.py
+        class_name: Document
+        url: http://localhost:8080
+      qdrant:
+        status: CONFIG ONLY — not implemented in vector_databases.py
+        collection_name: rag_documents
+        url: http://localhost:6333
+
+  llm:
+    current_provider: gemini
+    current_model: models/gemini-3-flash-preview
+    temperature: 0.7
+    max_tokens: 2048
+    providers:
+      gemini:
+        models: [models/gemini-3-flash-preview, gemini-2.0-flash-exp, gemini-1.5-flash, gemini-1.5-pro]
+        requires: google-genai + GEMINI_API_KEY
+        api_call: client.models.generate_content(model, contents)
+      openai:
+        models: [gpt-4-turbo, gpt-4, gpt-3.5-turbo]
+        requires: openai package (commented) + OPENAI_API_KEY
+        api_call: client.chat.completions.create(model, messages)
+      claude:
+        models: [claude-3-5-sonnet-20241022, claude-3-haiku-20240307]
+        requires: anthropic package (commented) + ANTHROPIC_API_KEY
+        api_call: client.messages.create(model, max_tokens, messages)
+
+  rag_pipeline:
+    chunk_size: 800
+    chunk_overlap: 200
+    top_k: 10
+    similarity_threshold: 0.15
+    system_prompt_placeholders: ["{context}", "{query}"]
+    system_prompt_note: >
+      Context is built as: [Source: filename, Relevance: score]\n{chunk_text}
+      repeated for each retrieved chunk, joined by double newlines.
+
+  document:
+    supported_formats: [.pdf, .docx, .xlsx, .txt]
+    max_file_size_mb: 50
+    pdf_parser_options: [pypdf2, pdfplumber]
+    default_pdf_parser: pypdf2
+    excel_combine_sheets: true
+
+  api:
+    host: "0.0.0.0"
+    port: 8000
+    reload: true  # disable in production
+    cors_origins: ["*"]  # restrict in production
+
+# ==============================================================================
+# API ENDPOINTS
+# ==============================================================================
+
+api_endpoints:
+
+  - method: GET
+    path: /
+    description: API info and endpoint listing
+    auth: none
+    response:
+      name: string
+      version: string
+      status: string
+      endpoints: object
+
+  - method: POST
+    path: /upload
+    description: Upload and process a document into the vector DB
+    auth: none
+    request: multipart/form-data
+    fields:
+      file: binary (PDF/DOCX/XLSX/TXT, max 50 MB)
+    response_model: UploadResponse
+    response_fields:
+      status: "success"
+      message: string
+      document_id: "doc_{counter}_{unix_timestamp}"
+      filename: string
+      file_info:
+        filename: string
+        extension: string
+        size_bytes: int
+        size_mb: float
+        mime_type: string
+      chunks_added: int
+      total_chunks: int  # cumulative across all docs
+      processing_time_ms: float
+    errors:
+      400: No text extracted / unsupported format
+      413: File exceeds 50 MB
+      500: Parsing or embedding error
+
+  - method: POST
+    path: /query
+    description: RAG query — retrieves relevant chunks and generates LLM answer
+    auth: none
+    request_model: QueryRequest
+    request_fields:
+      question: string (required)
+      top_k: int (optional, default 10)
+    response_model: QueryResponse
+    response_fields:
+      question: string
+      answer: string
+      sources:
+        - text: string (first 200 chars + "...")
+          filename: string
+          chunk_index: int
+          similarity_score: float (3 decimal places)
+      processing_time_ms: float
+    errors:
+      400: Empty question or no documents in DB
+      500: Embedding / search / LLM error (detail contains full error message)
+
+  - method: GET
+    path: /status
+    description: System health and provider info
+    auth: none
+    response_model: StatusResponse
+    response_fields:
+      status: "running"
+      total_documents: int  # resets on restart (in-memory counter)
+      total_chunks: int     # from vector DB (persists across restarts)
+      embedding_model: "local/BAAI/bge-large-en-v1.5"
+      vector_db_provider: "pgvector"
+      llm_model: "gemini/models/gemini-3-flash-preview"
+
+  - method: DELETE
+    path: /reset
+    description: Clear all vectors from the database
+    auth: none
+    response:
+      status: "success"
+      message: string
+      total_documents: 0
+      total_chunks: 0
+
+  - method: POST
+    path: /save
+    description: Save FAISS index to disk (other DBs auto-persist)
+    auth: none
+    response:
+      status: "success" | "info"
+      message: string
+      path: string (FAISS only)
+
+  - method: POST
+    path: /load
+    description: Load FAISS index from disk
+    auth: none
+    response:
+      status: "success" | "info"
+      message: string
+      total_vectors: int (FAISS only)
+
+# ==============================================================================
+# DATA MODELS (Pydantic)
+# ==============================================================================
+
+data_models:
+
+  QueryRequest:
+    question: "str — required, must be non-empty"
+    top_k: "Optional[int] — defaults to RAG_CONFIG['top_k'] (10)"
+
+  QueryResponse:
+    question: str
+    answer: str
+    sources: "List[Dict[str, Any]]"
+    processing_time_ms: float
+
+  UploadResponse:
+    status: str
+    message: str
+    document_id: str
+    filename: str
+    file_info: "Dict[str, Any]"
+    chunks_added: int
+    total_chunks: int
+    processing_time_ms: float
+
+  StatusResponse:
+    status: str
+    total_documents: int
+    total_chunks: int
+    embedding_model: str
+    vector_db_provider: str
+    llm_model: str
+
+# ==============================================================================
+# ENVIRONMENT VARIABLES
+# ==============================================================================
+
+environment_variables:
+  required:
+    GEMINI_API_KEY: Gemini LLM — required with default config
+    PGVECTOR_CONNECTION_STRING: "Format: postgresql://user:pass@host:port/dbname"
+
+  optional_by_provider:
+    OPENAI_API_KEY: OpenAI embeddings or LLM
+    ANTHROPIC_API_KEY: Claude LLM
+    COHERE_API_KEY: Cohere embeddings
+    PINECONE_API_KEY: Pinecone vector DB
+    PINECONE_ENV: "Default: us-east-1"
+    WEAVIATE_URL: "Default: http://localhost:8080"
+    WEAVIATE_API_KEY: Weaviate cloud
+    QDRANT_URL: "Default: http://localhost:6333"
+    QDRANT_API_KEY: Qdrant cloud
+
+  security_notes:
+    - .env file must be in .gitignore
+    - Never commit API keys — Google auto-revokes leaked Gemini keys
+    - Rotate keys immediately if git history shows exposure
+
+# ==============================================================================
+# PYTHON DEPENDENCIES
+# ==============================================================================
+
+dependencies:
+  always_required:
+    - google-genai             # Gemini LLM
+    - sentence-transformers    # Local embeddings (pulls torch + CUDA)
+    - faiss-cpu                # FAISS vector DB
+    - python-dotenv            # .env loading
+    - numpy                    # Embedding arrays
+    - fastapi>=0.104.0         # Web framework
+    - "uvicorn[standard]>=0.24.0" # ASGI server
+    - python-multipart         # File uploads
+    - pydantic                 # Data models
+    - PyPDF2>=3.0.0            # PDF parsing
+    - python-docx>=1.0.0       # DOCX parsing
+    - openpyxl>=3.1.0          # XLSX parsing
+    - pandas>=2.0.0            # Excel sheet handling in parsers
+    - psycopg2-binary>=2.9.0   # pgvector (PostgreSQL)
+
+  optional_cloud_providers:
+    - pdfplumber>=0.10.0       # Better PDF table extraction
+    - chromadb>=0.4.0          # ChromaDB vector DB
+    - pinecone-client>=2.2.0   # Pinecone vector DB
+    - openai>=1.3.0            # OpenAI embeddings / LLM
+    - cohere>=4.30.0           # Cohere embeddings
+    - anthropic>=0.7.0         # Claude LLM
+
+  size_impact:
+    torch: 1.8 GB              # Required by sentence-transformers
+    nvidia_cuda_stack: 4.3 GB  # GPU support (remove if CPU-only)
+    triton: 641 MB             # GPU JIT compiler
+    total_with_gpu: ~8.5 GB
+    total_cpu_only: ~2.0 GB    # Use torch --index-url CPU build
+
+# ==============================================================================
+# DEVELOPMENT COMMANDS
+# ==============================================================================
+
+commands:
+  setup:
+    - "python -m venv venv && source venv/bin/activate"
+    - "pip install -r requirements_api.txt"
+
+  run:
+    development: "uvicorn app:app --reload"
+    direct: "python app.py"
+    production: "gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000"
+
+  utilities:
+    - "python scripts/simple_rag.py      # E2E test without API server"
+    - "python scripts/inspect_db.py      # Inspect vector DB"
+    - "python scripts/generate_docs.py   # Generate sample real estate docs"
+
+  port_management:
+    check: "lsof -i :8000"
+    kill_all: "lsof -t -i:8000 | xargs kill -9"
+
+  debug_query_errors:
+    note: App does NOT write errors to file — check HTTP response detail field
+    curl: >
+      curl -s -X POST http://localhost:8000/query
+      -H "Content-Type: application/json"
+      -d '{"question": "your question"}' | python3 -m json.tool
+
+# ==============================================================================
+# ADDING NEW PROVIDERS (Recipes)
+# ==============================================================================
+
+adding_providers:
+
+  new_embedding_provider:
+    steps:
+      - "1. Create class in src/embeddings.py inheriting EmbeddingProvider"
+      - "2. Implement: embed(), get_dimensions(), get_model_name()"
+      - "3. Add elif branch in get_embedding_provider() factory"
+      - "4. Add config block in config.py under EMBEDDING_CONFIG"
+
+  new_vector_db:
+    steps:
+      - "1. Create class in src/vector_databases.py inheriting VectorDatabase"
+      - "2. Implement: add(), search(), save(), load(), reset(), get_stats()"
+      - "3. search() must return List[Tuple[str, str, Dict, float]]"
+      - "4. Add elif branch in get_vector_database() factory"
+      - "5. Add config block in config.py under VECTOR_DB_CONFIG"
+
+  new_llm_provider:
+    steps:
+      - "1. Add elif branch in create_llm_client() in src/llm.py"
+      - "2. Add elif branch in generate_answer() in src/llm.py"
+      - "3. Add config block in config.py under LLM_CONFIG"
+
+  new_document_parser:
+    steps:
+      - "1. Add parser function (signature: bytes -> str) to src/document_parsers.py"
+      - "2. Register extension in auto_detect_and_parse()"
+      - "3. Add extension to DOCUMENT_CONFIG['supported_formats'] in config.py"
+
+# ==============================================================================
+# IMPORTANT CONSTRAINTS
+# ==============================================================================
+
+constraints:
+  embedding_dimensions: >
+    EMBEDDING_CONFIG["dimensions"] MUST match the vector DB's dimension parameter.
+    Mismatch causes runtime errors on first embed() call.
+  in_memory_processing: >
+    All document parsers accept bytes and return str.
+    Never write uploaded files to disk.
+  similarity_scoring_varies_by_provider:
+    faiss: 1 / (1 + L2_distance)
+    pgvector: 1 - cosine_distance
+    pinecone: native cosine similarity (already 0–1)
+  global_state_init: >
+    embedder, vector_db, llm_client are initialised at module import time.
+    Changing config requires server restart.
+  document_counter: >
+    document_counter["count"] is in-memory. It resets to 0 on restart.
+    total_chunks from vector DB persists (pgvector is durable).
+
+# ==============================================================================
+# KNOWN ISSUES & SOLUTIONS
+# ==============================================================================
+
+known_issues:
+  - issue: "403 PERMISSION_DENIED from Gemini API"
+    cause: API key leaked (detected by Google) or missing GEMINI_API_KEY in .env
+    fix: Generate new key at https://aistudio.google.com/apikey and update .env
+
+  - issue: "[Errno 98] Address already in use"
+    cause: Previous server instance left zombie processes on port 8000
+    fix: "kill -9 $(lsof -t -i:8000)"
+
+  - issue: "embeddings.position_ids UNEXPECTED in BertModel LOAD REPORT"
+    cause: Known harmless warning from BAAI/bge-large-en-v1.5 model loading
+    fix: Safe to ignore — different task architecture, not an error
+
+  - issue: "HF Hub unauthenticated requests warning"
+    cause: No HF_TOKEN set in environment
+    fix: Add HF_TOKEN=your_token to .env for higher rate limits (optional)
+
+# ==============================================================================
+# PRESET COST CONFIGURATIONS (from config.py comments)
+# ==============================================================================
+
+preset_configurations:
+  free_local:
+    embedding: "local / all-MiniLM-L6-v2 / 384 dims"
+    vector_db: faiss
+    llm: "gemini / gemini-2.5-flash"
+    monthly_cost: ~$2.50
+
+  openai_faiss:
+    embedding: "openai / text-embedding-3-small / 1536 dims"
+    vector_db: faiss
+    llm: "openai / gpt-3.5-turbo"
+    monthly_cost: ~$10–20
+
+  full_openai_pinecone:
+    embedding: "openai / text-embedding-3-small / 1536 dims"
+    vector_db: pinecone
+    llm: "openai / gpt-4-turbo"
+    monthly_cost: ~$170–370
+
+  openai_embed_claude_llm:
+    embedding: "openai / text-embedding-3-small / 1536 dims"
+    vector_db: faiss
+    llm: "claude / claude-3-5-sonnet-20241022"
+    monthly_cost: ~$120–220
+
+  best_local_quality:
+    embedding: "local / e5-large-v2 / 1024 dims"
+    vector_db: chromadb
+    llm: "gemini / gemini-2.5-flash"
+    monthly_cost: ~$2.50

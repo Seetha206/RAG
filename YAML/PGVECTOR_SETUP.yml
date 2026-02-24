@@ -1,0 +1,619 @@
+################################################################################
+# PGVECTOR SETUP — Complete Installation & Usage Reference
+# Used by: SellBot RAG Backend (src/vector_databases.py → PgVectorDatabase)
+# What: PostgreSQL extension that adds vector similarity search
+################################################################################
+
+overview:
+  what_is_pgvector: >
+    pgvector is a PostgreSQL extension that adds a native vector data type
+    and similarity search operators (<=> cosine, <-> L2, <#> inner product).
+    The RAG system uses it to store document embeddings and retrieve the most
+    semantically similar chunks for a given query.
+
+  why_pgvector:
+    - Free and open source
+    - Data persists automatically across restarts (unlike FAISS)
+    - Full SQL available — filter by metadata (price, location) THEN vector search
+    - Production-ready — backed by PostgreSQL reliability
+    - No separate vector DB infrastructure needed if PostgreSQL already in use
+
+  current_rag_config:
+    embedding_model: BAAI/bge-large-en-v1.5
+    dimensions: 1024
+    table_name: rag_documents
+    similarity_function: "1 - cosine_distance  (operator: <=>)"
+    index_type: HNSW (auto-created on first connect)
+    monthly_cost: $0
+
+# ==============================================================================
+# TABLE SCHEMA (auto-created by PgVectorDatabase._setup_database())
+# ==============================================================================
+
+auto_created_schema:
+  table: rag_documents
+  columns:
+    id:
+      type: TEXT
+      constraint: PRIMARY KEY
+      format: "doc_{counter}_{unix_timestamp}_{chunk_index}"
+    embedding:
+      type: "vector(1024)"
+      notes: Dimension must match EMBEDDING_CONFIG["dimensions"] in config.py
+    text:
+      type: TEXT
+      notes: Raw chunk text as stored and returned in search results
+    metadata:
+      type: JSONB
+      fields:
+        filename: string
+        document_id: string
+        chunk_index: int
+        total_chunks: int
+        upload_time: float (unix timestamp)
+    created_at:
+      type: "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+
+  auto_created_index:
+    name: rag_documents_embedding_idx
+    type: HNSW
+    operator_class: vector_cosine_ops
+    parameters:
+      m: 16            # max connections per layer (higher = better recall, slower build)
+      ef_construction: 64  # candidate list size during build
+
+# ==============================================================================
+# INSTALLATION OPTIONS
+# ==============================================================================
+
+installation:
+
+  option_1_local_ubuntu_debian:
+    recommended_for: Development on Linux
+    steps:
+      - name: Install PostgreSQL
+        commands:
+          - "sudo apt update"
+          - "sudo apt install postgresql postgresql-contrib"
+      - name: Install pgvector extension package
+        commands:
+          - "sudo apt install postgresql-15-pgvector"
+          - "# If on PostgreSQL 16: sudo apt install postgresql-16-pgvector"
+      - name: Verify PostgreSQL is running
+        commands:
+          - "sudo systemctl status postgresql"
+          - "sudo systemctl enable postgresql   # auto-start on boot"
+
+  option_2_macos_homebrew:
+    recommended_for: Development on macOS
+    steps:
+      - name: Install PostgreSQL
+        command: "brew install postgresql@15"
+      - name: Install pgvector
+        command: "brew install pgvector"
+      - name: Start PostgreSQL
+        command: "brew services start postgresql@15"
+
+  option_3_docker:
+    recommended_for: Fastest setup, clean isolated environment
+    steps:
+      - name: Pull and run postgres+pgvector image
+        command: |
+          docker run -d \
+            --name postgres-pgvector \
+            -e POSTGRES_PASSWORD=mypassword \
+            -e POSTGRES_DB=rag_db \
+            -p 5432:5432 \
+            ankane/pgvector
+      - name: Connect to the container
+        command: "docker exec -it postgres-pgvector psql -U postgres -d rag_db"
+      - name: Stop / Start
+        commands:
+          - "docker stop postgres-pgvector"
+          - "docker start postgres-pgvector"
+
+  option_4_windows:
+    recommended_for: Windows development
+    steps:
+      - name: Install PostgreSQL
+        action: Download installer from https://www.postgresql.org/download/windows/
+      - name: Build pgvector from source
+        commands:
+          - "git clone --branch v0.5.1 https://github.com/pgvector/pgvector.git"
+          - "cd pgvector"
+          - "make"
+          - "make install"
+
+  option_5_supabase_cloud:
+    recommended_for: Production / MVP (free tier available)
+    cost: "FREE up to 500 MB; $25/month for 8 GB"
+    steps:
+      - "Sign up at https://supabase.com"
+      - "Create a new project"
+      - "pgvector is PRE-INSTALLED — no setup needed"
+      - "Copy the connection string from Settings → Database"
+    connection_string_format: "postgresql://postgres:[PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres"
+
+  option_6_aws_rds:
+    recommended_for: Enterprise / AWS users
+    cost: ~$15–50/month
+    steps:
+      - "Create RDS instance (PostgreSQL 15+)"
+      - "Enable pgvector via parameter group or SQL"
+      - "Use RDS endpoint as connection host"
+
+  option_7_google_cloud_sql:
+    recommended_for: Enterprise / GCP users
+    cost: ~$20–60/month
+    steps:
+      - "Create PostgreSQL 15+ instance in Cloud SQL"
+      - "Enable pgvector extension via Cloud SQL console or SQL"
+      - "Use Cloud SQL Auth Proxy for secure local connections"
+
+# ==============================================================================
+# STEP-BY-STEP DATABASE SETUP (Local / Docker)
+# ==============================================================================
+
+setup_steps:
+
+  step_1_connect_as_superuser:
+    local:
+      command: "sudo -u postgres psql"
+    docker:
+      command: "docker exec -it postgres-pgvector psql -U postgres"
+
+  step_2_create_database_and_user:
+    sql: |
+      -- Create the RAG database
+      CREATE DATABASE rag_db;
+
+      -- Create a dedicated user (recommended for production)
+      CREATE USER rag_user WITH PASSWORD 'secure_password';
+
+      -- Grant full access to the database
+      GRANT ALL PRIVILEGES ON DATABASE rag_db TO rag_user;
+
+      -- Connect to the new database
+      \c rag_db
+
+  step_3_enable_pgvector_extension:
+    sql: |
+      -- Must be run as superuser, inside the target database
+      CREATE EXTENSION IF NOT EXISTS vector;
+
+      -- Verify it installed correctly
+      \dx
+    expected_output: |
+      Name    | Version | Schema | Description
+      --------+---------+--------+--------------------------------------------------
+      plpgsql | 1.0     | pg_catalog | PL/pgSQL procedural language
+      vector  | 0.5.1   | public | vector data type and ivfflat and hnsw access methods
+
+  step_4_grant_schema_permissions:
+    note: Required if using a non-superuser (rag_user) to run the RAG app
+    sql: |
+      \c rag_db
+
+      -- Allow rag_user to create tables
+      GRANT ALL ON SCHEMA public TO rag_user;
+
+      -- Allow rag_user to use the vector extension
+      GRANT USAGE ON SCHEMA public TO rag_user;
+
+  step_5_exit_psql:
+    command: "\\q"
+
+  step_6_verify_connection:
+    psql_test:
+      command: 'psql "postgresql://rag_user:secure_password@localhost:5432/rag_db" -c "SELECT version();"'
+    python_test:
+      command: |
+        python -c "
+        import psycopg2
+        conn = psycopg2.connect('postgresql://rag_user:secure_password@localhost:5432/rag_db')
+        print('Connection successful!')
+        conn.close()
+        "
+
+# ==============================================================================
+# ENVIRONMENT CONFIGURATION
+# ==============================================================================
+
+env_configuration:
+  file: .env  # in project root
+  variable: PGVECTOR_CONNECTION_STRING
+
+  formats:
+    local_postgres: "postgresql://postgres:password@localhost:5432/rag_db"
+    local_with_user: "postgresql://rag_user:secure_password@localhost:5432/rag_db"
+    docker: "postgresql://postgres:mypassword@localhost:5432/rag_db"
+    supabase: "postgresql://postgres:[YOUR-PASSWORD]@db.xxxxx.supabase.co:5432/postgres"
+    cloud_generic: "postgresql://rag_user:secure_password@your-db-host.com:5432/rag_db"
+
+  format_breakdown:
+    scheme: postgresql://
+    username: rag_user
+    password: secure_password
+    host: localhost
+    port: 5432  # PostgreSQL default
+    database: rag_db
+
+# ==============================================================================
+# CONFIG.PY SETTINGS
+# ==============================================================================
+
+config_py_settings:
+  file: config.py
+  section: VECTOR_DB_CONFIG
+
+  required_settings: |
+    VECTOR_DB_CONFIG = {
+        "provider": "pgvector",
+        "pgvector": {
+            "connection_string": os.getenv("PGVECTOR_CONNECTION_STRING"),
+            "table_name": "rag_documents",
+        },
+    }
+
+  embedding_must_match: |
+    EMBEDDING_CONFIG = {
+        "provider": "local",
+        "model": "BAAI/bge-large-en-v1.5",
+        "dimensions": 1024,   # MUST match vector(1024) in the table schema
+    }
+
+  critical_constraint: >
+    The "dimensions" value in EMBEDDING_CONFIG must exactly match the dimension
+    used when the rag_documents table was first created. If you change the
+    embedding model dimensions, you must DROP the table and let it recreate:
+    DROP TABLE rag_documents;
+
+# ==============================================================================
+# HOW THE RAG APP USES PGVECTOR (src/vector_databases.py)
+# ==============================================================================
+
+code_behaviour:
+
+  on_startup:
+    - Calls PgVectorDatabase.__init__(connection_string, table_name, dimensions)
+    - Opens persistent psycopg2 connection with autocommit=True
+    - Calls _setup_database() which runs:
+        - "CREATE EXTENSION IF NOT EXISTS vector"
+        - "CREATE TABLE IF NOT EXISTS rag_documents (...)"
+        - "CREATE INDEX IF NOT EXISTS ... USING hnsw (...)"
+    - Prints: "Initialized pgvector database: rag_documents"
+
+  on_upload (add method):
+    sql: |
+      INSERT INTO rag_documents (id, embedding, text, metadata)
+      VALUES %s
+      ON CONFLICT (id) DO UPDATE SET
+          embedding = EXCLUDED.embedding,
+          text = EXCLUDED.text,
+          metadata = EXCLUDED.metadata
+    notes:
+      - Uses psycopg2.extras.execute_values for batch insert
+      - ON CONFLICT UPDATE means re-uploading same doc_id overwrites safely
+
+  on_query (search method):
+    sql: |
+      SELECT
+          id,
+          text,
+          metadata,
+          1 - (embedding <=> %s::vector) AS similarity
+      FROM rag_documents
+      ORDER BY embedding <=> %s::vector
+      LIMIT %s
+    operator: "<=> is cosine distance; 1 - distance = cosine similarity"
+    returns: "List[Tuple[id, text, metadata_dict, similarity_float]]"
+    filter_applied_in_app: "results where similarity > RAG_CONFIG['similarity_threshold'] (0.15)"
+
+  on_reset (reset method):
+    sql: "DELETE FROM rag_documents"
+    note: Deletes all rows but keeps the table and index intact
+
+  get_stats:
+    sql: "SELECT COUNT(*) FROM rag_documents"
+    returns: "{provider, table_name, total_vectors, dimensions}"
+
+# ==============================================================================
+# VERIFYING THE SETUP AFTER STARTUP
+# ==============================================================================
+
+verification:
+
+  check_table_exists:
+    connect: 'psql "postgresql://rag_user:password@localhost:5432/rag_db"'
+    sql: |
+      \dt
+      -- Expected:
+      -- Schema |     Name      | Type  | Owner
+      -- public | rag_documents | table | rag_user
+
+  check_table_schema:
+    sql: |
+      \d rag_documents
+      -- Expected columns:
+      -- id         | text                        | not null
+      -- embedding  | vector(1024)                |
+      -- text       | text                        |
+      -- metadata   | jsonb                       |
+      -- created_at | timestamp without time zone |
+
+  check_index:
+    sql: |
+      \di
+      -- Expected: rag_documents_embedding_idx (hnsw)
+
+  check_row_count:
+    sql: "SELECT COUNT(*) FROM rag_documents;"
+
+  check_embedding_dimensions:
+    sql: |
+      SELECT id, array_length(embedding::real[], 1) AS dims
+      FROM rag_documents LIMIT 1;
+      -- Expected: 1024
+
+  view_sample_data:
+    sql: |
+      SELECT id, text, metadata, created_at
+      FROM rag_documents
+      LIMIT 3;
+
+  upload_test_document:
+    command: |
+      curl -X POST "http://localhost:8000/upload" \
+        -F "file=@./real_estate_documents/sample_documents/project_info.txt"
+
+  query_test:
+    command: |
+      curl -s -X POST http://localhost:8000/query \
+        -H "Content-Type: application/json" \
+        -d '{"question": "What properties are available?"}' | python3 -m json.tool
+
+  check_status_endpoint:
+    command: "curl -s http://localhost:8000/status | python3 -m json.tool"
+    expected_fields: [total_chunks, vector_db_provider]
+
+# ==============================================================================
+# ADVANCED SQL — DIRECT DATABASE USAGE
+# ==============================================================================
+
+advanced_sql:
+
+  manual_vector_search:
+    description: Test vector similarity search directly in psql
+    sql: |
+      -- Replace the array with an actual 1024-dim embedding vector
+      SELECT id, text, metadata,
+             1 - (embedding <=> '[0.1, 0.2, ...]'::vector) AS similarity
+      FROM rag_documents
+      ORDER BY embedding <=> '[0.1, 0.2, ...]'::vector
+      LIMIT 5;
+
+  hybrid_query_sql_plus_vector:
+    description: Filter by metadata THEN rank by vector similarity
+    sql: |
+      SELECT id, text, metadata,
+             1 - (embedding <=> query_vector) AS similarity
+      FROM rag_documents
+      WHERE metadata->>'type' = '3BHK'
+        AND (metadata->>'price')::float < 100
+      ORDER BY embedding <=> query_vector
+      LIMIT 5;
+
+  distance_operators:
+    cosine: "<=>   — 1 - cosine similarity (default in this RAG)"
+    l2_euclidean: "<->   — L2 distance"
+    inner_product: "<#>   — negative inner product"
+
+  performance_indexes:
+    ivfflat:
+      description: Faster approximate search, lower memory — best for >10k vectors
+      sql: |
+        CREATE INDEX ON rag_documents
+        USING ivfflat (embedding vector_cosine_ops)
+        WITH (lists = 100);
+      notes: Run ANALYZE after creating; lists ≈ sqrt(total_rows)
+
+    hnsw:
+      description: Better recall quality, slower to build — already auto-created by app
+      sql: |
+        CREATE INDEX ON rag_documents
+        USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64);
+
+    analyze_table:
+      description: Update query planner statistics after bulk inserts
+      sql: "ANALYZE rag_documents;"
+
+  check_index_usage:
+    sql: |
+      SELECT indexname, idx_scan, idx_tup_read
+      FROM pg_stat_user_indexes
+      WHERE relname = 'rag_documents';
+
+  check_table_size:
+    sql: "SELECT pg_size_pretty(pg_total_relation_size('rag_documents'));"
+
+# ==============================================================================
+# TROUBLESHOOTING
+# ==============================================================================
+
+troubleshooting:
+
+  error_extension_does_not_exist:
+    message: 'ERROR: type "vector" does not exist'
+    cause: pgvector extension not installed or not enabled in this database
+    fix:
+      - "sudo apt install postgresql-15-pgvector  # install package"
+      - "sudo -u postgres psql rag_db"
+      - "CREATE EXTENSION vector;"
+
+  error_permission_denied_to_create_extension:
+    message: "ERROR: permission denied to create extension vector"
+    cause: Connected as non-superuser
+    fix:
+      - "\\q  # exit current psql session"
+      - "sudo -u postgres psql"
+      - "\\c rag_db"
+      - "CREATE EXTENSION vector;"
+      - "\\q"
+      - "# Now reconnect as your normal user — extension persists"
+
+  error_could_not_connect:
+    message: "psycopg2.OperationalError: could not connect to server"
+    causes:
+      - PostgreSQL is not running
+      - Wrong host/port in connection string
+      - Wrong password
+    fix:
+      commands:
+        - "sudo systemctl status postgresql"
+        - "sudo systemctl start postgresql"
+        - 'psql "postgresql://rag_user:password@localhost:5432/rag_db"  # manual test'
+
+  error_dimension_mismatch:
+    message: "ERROR: expected N dimensions, not M"
+    cause: >
+      The table was created with a different embedding dimension than the
+      current EMBEDDING_CONFIG["dimensions"] value in config.py
+    fix:
+      - "# Drop table to force recreation with new dimensions"
+      - 'psql "postgresql://..." -c "DROP TABLE rag_documents;"'
+      - "# Restart the RAG server — table recreates automatically"
+      - "# Re-upload all documents"
+
+  error_relation_does_not_exist:
+    message: "ERROR: relation rag_documents does not exist"
+    cause: App tried to query before table was created, or wrong database
+    fix:
+      - "# Verify you are connecting to the correct database"
+      - "# Restart server — _setup_database() recreates table on startup"
+
+  slow_queries:
+    cause: No index or index not used by planner
+    fix:
+      - "ANALYZE rag_documents;"
+      - "CREATE INDEX ON rag_documents USING ivfflat (embedding vector_cosine_ops) WITH (lists=100);"
+
+  zombie_connections:
+    cause: App crashed without closing psycopg2 connection
+    fix:
+      sql: |
+        SELECT pid, query, state, query_start
+        FROM pg_stat_activity
+        WHERE datname = 'rag_db';
+
+        SELECT pg_terminate_backend(pid)
+        FROM pg_stat_activity
+        WHERE datname = 'rag_db' AND state = 'idle';
+
+# ==============================================================================
+# PRODUCTION RECOMMENDATIONS
+# ==============================================================================
+
+production:
+
+  connection_pooling:
+    tool: pgBouncer
+    install: "sudo apt install pgbouncer"
+    reason: >
+      The RAG app opens one persistent connection. Under high load with multiple
+      workers (gunicorn -w 4), use pgBouncer to pool connections efficiently.
+
+  backups:
+    backup: "pg_dump rag_db > rag_db_backup_$(date +%Y%m%d).sql"
+    restore: "psql rag_db < rag_db_backup.sql"
+    automated: "Use pg_dump in a cron job or cloud provider snapshot"
+
+  monitoring:
+    index_usage: |
+      SELECT * FROM pg_stat_user_indexes WHERE relname = 'rag_documents';
+    table_size: |
+      SELECT pg_size_pretty(pg_total_relation_size('rag_documents'));
+    active_connections: |
+      SELECT count(*) FROM pg_stat_activity WHERE datname = 'rag_db';
+
+  scaling:
+    under_100k_vectors: "HNSW index (auto-created) is sufficient"
+    over_100k_vectors: "Switch to IVFFlat with lists = sqrt(row_count)"
+    millions_of_vectors: "Consider Pinecone or dedicated vector DB"
+
+# ==============================================================================
+# COST COMPARISON
+# ==============================================================================
+
+cost_comparison:
+  local_postgresql:
+    cost: FREE
+    best_for: Development
+  docker:
+    cost: FREE
+    best_for: Development, CI/CD
+  supabase_free:
+    cost: "FREE (500 MB)"
+    best_for: MVP, small projects
+  supabase_pro:
+    cost: $25/month (8 GB)
+    best_for: Production, small-medium
+  aws_rds:
+    cost: ~$15–50/month
+    best_for: Enterprise, full AWS stack
+  google_cloud_sql:
+    cost: ~$20–60/month
+    best_for: Enterprise, GCP users
+
+# ==============================================================================
+# PGVECTOR vs OTHER VECTOR DBs
+# ==============================================================================
+
+comparison:
+  pgvector:
+    cost: FREE
+    persistence: Auto (PostgreSQL)
+    sql_queries: Yes — full SQL + metadata filtering
+    scalability: Good (millions of rows)
+    speed: Good
+    setup: Medium
+    infra: Self-hosted PostgreSQL
+  faiss:
+    cost: FREE
+    persistence: Manual (POST /save endpoint)
+    sql_queries: No
+    scalability: Excellent
+    speed: Excellent
+    setup: Easy
+    infra: In-memory / local files
+  pinecone:
+    cost: $70+/month
+    persistence: Auto (cloud)
+    sql_queries: Limited metadata filtering
+    scalability: Excellent
+    speed: Excellent
+    setup: Easy
+    infra: Managed cloud
+
+# ==============================================================================
+# QUICK SETUP CHECKLIST
+# ==============================================================================
+
+checklist:
+  - "[ ] Install PostgreSQL (apt / brew / Docker)"
+  - "[ ] Install pgvector package (apt install postgresql-15-pgvector)"
+  - "[ ] Connect as postgres superuser: sudo -u postgres psql"
+  - "[ ] CREATE DATABASE rag_db;"
+  - "[ ] \\c rag_db"
+  - "[ ] CREATE EXTENSION IF NOT EXISTS vector;"
+  - "[ ] CREATE USER rag_user WITH PASSWORD 'password'; (optional)"
+  - "[ ] GRANT ALL PRIVILEGES ON DATABASE rag_db TO rag_user;"
+  - "[ ] GRANT ALL ON SCHEMA public TO rag_user;"
+  - "[ ] \\q"
+  - "[ ] Add PGVECTOR_CONNECTION_STRING to .env"
+  - "[ ] Verify config.py: provider = pgvector, dimensions = 1024"
+  - "[ ] pip install psycopg2-binary (already in requirements_api.txt)"
+  - "[ ] python app.py — should print: Initialized pgvector database: rag_documents"
+  - "[ ] Upload a test document via /upload"
+  - "[ ] Query via /query and confirm answer is returned"
+  - "[ ] Run \\d rag_documents in psql to verify table schema"

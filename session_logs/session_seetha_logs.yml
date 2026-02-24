@@ -301,3 +301,163 @@ sessions:
     pending_tasks:
       - "Test with new v2 system prompt for answer quality"
       - "Run semantic questions to verify retrieval after all fixes"
+
+  - session_id: SESSION_003
+    date: "2026-02-23"
+    duration: "~3 hours"
+    summary: "CLAUDE.md corrections, venv analysis, 500 error diagnosis, full YAML documentation suite, pgvector deep-dive, log system setup"
+
+    activities:
+
+      - order: 1
+        timestamp: "2026-02-23T00:00:00"
+        action: "CLAUDE.md accuracy audit and corrections"
+        description: |
+          Ran /init command — explored full codebase to verify CLAUDE.md accuracy.
+          Found and fixed 6 discrepancies:
+          1. frontend/ does not exist — vanilla UI is prototype/index.html (single file)
+          2. overview/ React 18 app was completely missing from project structure
+          3. vector_store/ directory missing from project structure
+          4. LLM model corrected to models/gemini-3-flash-preview (active config value)
+          5. RAG/ frontend: added i18n/, functions/, pages/ directories and .env.testlive
+          6. vector_databases.py: added note that weaviate/qdrant are config-only, not implemented
+        files_changed:
+          - CLAUDE.md
+
+      - order: 2
+        timestamp: "2026-02-23T00:20:00"
+        action: "venv size analysis (8.5 GB)"
+        description: |
+          User asked why the venv is 8.5 GB. Measured actual package sizes:
+          - nvidia/* (CUDA libraries): 4.3 GB
+          - torch: 1.8 GB
+          - triton (GPU JIT compiler): 641 MB
+          Total GPU stack: ~6.7 GB — all pulled in by sentence-transformers.
+          Root cause: sentence-transformers requires torch, torch installed with CUDA.
+          Options presented:
+          1. Keep as-is (GPU accelerated embeddings)
+          2. CPU-only torch build saves 4.3 GB
+          3. Cloud embeddings (OpenAI/Cohere) saves full 6.7 GB
+
+      - order: 3
+        timestamp: "2026-02-23T00:40:00"
+        action: "Diagnosed 500 error on POST /query"
+        description: |
+          Server started cleanly but all /query calls returned HTTP 500.
+          Terminal only showed "500 Internal Server Error" — no detail visible.
+          Diagnosis: curl /query and read response body "detail" field revealed:
+          403 PERMISSION_DENIED — "Your API key was reported as leaked."
+          Root cause: GEMINI_API_KEY was revoked by Google after being detected as leaked.
+          Fix: Generate new key at aistudio.google.com/apikey, update .env.
+          Key lesson: app.py wraps ALL exceptions as 500 — always use curl to see detail.
+        error_ref: "ERR_012"
+
+      - order: 4
+        timestamp: "2026-02-23T00:50:00"
+        action: "Resolved port 8000 Address already in use"
+        description: |
+          User encountered [Errno 98] Address already in use on server restart.
+          Cause: uvicorn --reload spawns 2 processes; quick Ctrl+C only kills parent.
+          Diagnosis: lsof -i :8000 showed PIDs 17967 and 18040 still listening.
+          Fix: kill -9 17967 18040
+          One-liner: lsof -t -i:8000 | xargs kill -9
+          Prevention: set reload: False in API_CONFIG for single-process mode.
+
+      - order: 5
+        timestamp: "2026-02-23T01:00:00"
+        action: "Created YAML documentation suite"
+        description: |
+          Created YAML/ folder with 3 comprehensive reference YAML files covering
+          every aspect of the system — sufficient to recreate the project from
+          scratch in a new Claude session.
+
+          RAG_backend.yml: full upload+query pipeline, all config options (3 embedding
+          providers, 6 vector DBs, 3 LLMs), all API endpoints with schemas, all
+          Pydantic models, env vars, provider recipes, known issues, 5 cost presets.
+
+          RAG_frontend.yml: full tech stack with versions, directory structure,
+          all routes, all 5 Redux slices (state/actions/selectors), all TypeScript
+          types, all 3 API services with every method, all 5 chat components with
+          features, design tokens, 8 use cases documented end-to-end.
+
+          PGVECTOR_SETUP.yml: 7 installation options, full step-by-step SQL setup,
+          exact table schema, all SQL the app runs internally, 7 troubleshooting
+          entries, production recommendations, cost comparison table.
+        files_created:
+          - YAML/RAG_backend.yml
+          - YAML/RAG_frontend.yml
+          - YAML/PGVECTOR_SETUP.yml
+
+      - order: 6
+        timestamp: "2026-02-23T01:30:00"
+        action: "Created pgvector_setup.sql"
+        description: |
+          Created a complete ordered SQL file runnable as:
+          sudo -u postgres psql -f pgvector_setup.sql
+          Covers: create DB + user + grants, enable extension, schema permissions,
+          verification queries, optional manual table + HNSW index creation,
+          inspection queries, IVFFlat for >10k vectors, cleanup/reset commands,
+          zombie connection management, final 4-query verification checklist.
+        files_created:
+          - YAML/pgvector_setup.sql
+
+      - order: 7
+        timestamp: "2026-02-23T01:45:00"
+        action: "Deep-dive: <=>, pgvector choice, HNSW index rationale"
+        description: |
+          Full explanation of every technical decision in PGVECTOR_SETUP.yml:
+          - <=> = cosine distance; 1-(<=>)  = cosine similarity (direction = meaning)
+          - L2 (<->) penalises longer text; Inner product needs normalised vectors
+          - pgvector over FAISS: persistence, SQL+vector hybrid, zero extra infra
+          - pgvector over Pinecone: free, full SQL metadata filtering
+          - HNSW over IVFFlat: works on empty table at startup, real-time inserts,
+            better recall; IVFFlat needs existing data and periodic ANALYZE rebuilds
+          - m=16, ef_construction=64: industry-standard balanced defaults
+
+      - order: 8
+        timestamp: "2026-02-23T02:00:00"
+        action: "Updated CLAUDE.md with Session & Error Logs section"
+        description: |
+          Added ## Session & Error Logs section documenting both log systems:
+          - Naming conventions, full YAML schemas, all field types
+          - When to write entries (RAG quality failures, not just crashes)
+          - Summary of ERR_001–ERR_011 already in log
+          - Both are manually maintained — app never auto-writes to them
+        files_changed:
+          - CLAUDE.md
+
+      - order: 9
+        timestamp: "2026-02-23T02:15:00"
+        action: "Wrote ERR_012 and SESSION_003 log entries"
+        description: |
+          Created new error log file for today with ERR_012 (leaked Gemini API key).
+          Appended SESSION_003 to session log covering all 9 activities above.
+        files_created:
+          - error_logs/error_seetha_logs_20260223.yml
+        files_changed:
+          - session_logs/session_seetha_logs.yml
+
+    current_state:
+      backend:
+        status: "running — new Gemini API key required in .env"
+        embedding_model: "BAAI/bge-large-en-v1.5 (1024 dims, local)"
+        vector_db: "pgvector with HNSW index (33 chunks stored)"
+        llm: "models/gemini-3-flash-preview"
+        similarity_threshold: 0.15
+        top_k: 10
+        query_normalization: "enabled"
+      frontend:
+        status: "light theme, upload inline, user-friendly errors"
+        framework: "React 19 + TypeScript + Vite 7 + Tailwind CSS"
+      documentation:
+        yaml_suite:
+          - YAML/RAG_backend.yml
+          - YAML/RAG_frontend.yml
+          - YAML/PGVECTOR_SETUP.yml
+          - YAML/pgvector_setup.sql
+        claude_md: "corrected + session/error log schema added"
+
+    pending_tasks:
+      - "Replace leaked GEMINI_API_KEY in .env with new key from aistudio.google.com/apikey"
+      - "Run semantic questions to verify RAG quality after all fixes"
+      - "Test with new v2 system prompt for answer quality"
