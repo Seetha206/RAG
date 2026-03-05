@@ -7,12 +7,12 @@ dist/
 build/
 *.egg
 
-# Environment variables (secrets)
+# Environment variables (SECRETS - NEVER commit these)
 .env
 .env.*
 !.env.example
 
-# Vector stores / indexes
+# Vector stores / indexes (large binary files)
 vector_store/
 knowledge_base.index
 *.index
@@ -22,20 +22,36 @@ node_modules/
 
 # Archives
 *.zip
+*.tar.gz
 
 # OS files
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
+*.iml
 
-# Logs (optional — remove these lines if you want logs tracked)
-# error_logs/
-# session_logs/
+# Logs
+error_logs/
+session_logs/
+*.log
 
 # Build outputs
 RAG/dist/
+
+# Cache directories
+.cache/
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+
+# Local configuration (may contain paths/secrets)
+local_config.py
+config.local.py

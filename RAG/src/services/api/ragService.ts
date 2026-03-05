@@ -8,11 +8,12 @@ import type {
 } from '../../types/rag.types';
 
 export const postQuery = (data: QueryRequest) =>
-  apiClient.post<QueryResponse>(RAG_URLS.QUERY, data);
+  axiosInstance.post<QueryResponse>(RAG_URLS.QUERY, data, { timeout: 60000 }).then((r) => r.data);
 
-export const postUpload = async (file: File): Promise<UploadResponse> => {
+export const postUpload = async (file: File, project_id?: string): Promise<UploadResponse> => {
   const formData = new FormData();
   formData.append('file', file);
+  if (project_id) formData.append('project_id', project_id);
   const response = await axiosInstance.post<UploadResponse>(
     RAG_URLS.UPLOAD,
     formData,

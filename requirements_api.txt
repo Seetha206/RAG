@@ -5,7 +5,8 @@
 
 # Core dependencies (from simple_rag.py)
 google-genai
-sentence-transformers
+fastembed              # ONNX-based embeddings, no PyTorch needed (Apache 2.0)
+# sentence-transformers  # Uncomment to switch back (requires: pip install torch --index-url https://download.pytorch.org/whl/cpu)
 faiss-cpu
 python-dotenv
 numpy

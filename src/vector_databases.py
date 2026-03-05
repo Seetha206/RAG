@@ -508,7 +508,7 @@ class PgVectorDatabase(VectorDatabase):
         """
         try:
             import psycopg2
-            from psycopg2.extras import execute_values
+            from psycopg2 import pool as pg_pool
         except ImportError:
             raise ImportError(
                 "psycopg2 not installed. Run: pip install psycopg2-binary"
@@ -518,14 +518,29 @@ class PgVectorDatabase(VectorDatabase):
         self.table_name = table_name
         self.dimensions = dimensions
 
-        # Connect to database
-        self.conn = psycopg2.connect(connection_string)
-        self.conn.autocommit = True
+        # Thread-safe connection pool (ISSUE_001).
+        # add() and search() acquire/release per-call — safe for run_in_executor.
+        self.pool = pg_pool.ThreadedConnectionPool(2, 10, connection_string)
 
-        # Create extension and table
+        # Dedicated single connection for non-threaded callers:
+        # _setup_database(), and faq_db / project_manager calls in app.py.
+        # These run on the asyncio main thread with no concurrent access.
+        self.conn = self._get_conn()
+
+        # Create extension and tables
         self._setup_database()
 
         print(f"Initialized pgvector database: {table_name}")
+
+    def _get_conn(self):
+        """Acquire a pooled connection with autocommit enabled."""
+        conn = self.pool.getconn()
+        conn.autocommit = True
+        return conn
+
+    def _put_conn(self, conn) -> None:
+        """Return a pooled connection back to the pool."""
+        self.pool.putconn(conn)
 
     def _setup_database(self):
         """Create pgvector extension and table if they don't exist."""
@@ -533,15 +548,33 @@ class PgVectorDatabase(VectorDatabase):
             # Create vector extension
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
+            # Create projects table first (FK dependency)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    project_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    project_name VARCHAR(255) NOT NULL,
+                    vdb_namespace VARCHAR(255) NOT NULL UNIQUE,
+                    created_at   TIMESTAMP DEFAULT NOW(),
+                    updated_at   TIMESTAMP DEFAULT NOW()
+                );
+            """)
+
             # Create table
             cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self.table_name} (
-                    id TEXT PRIMARY KEY,
-                    embedding vector({self.dimensions}),
-                    text TEXT,
-                    metadata JSONB,
+                    id         TEXT PRIMARY KEY,
+                    project_id UUID REFERENCES projects(project_id) ON DELETE CASCADE,
+                    embedding  vector({self.dimensions}),
+                    text       TEXT,
+                    metadata   JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+
+            # Index: fast project-scoped queries (ISSUE_005)
+            cur.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self.table_name}_project_id
+                ON {self.table_name}(project_id);
             """)
 
             # Create HNSW index for vector similarity search
@@ -561,9 +594,10 @@ class PgVectorDatabase(VectorDatabase):
         self,
         embeddings: np.ndarray,
         texts: List[str],
-        metadata: List[Dict[str, Any]]
+        metadata: List[Dict[str, Any]],
+        project_id: str = None
     ) -> List[str]:
-        """Add embeddings to pgvector."""
+        """Add embeddings to pgvector, scoped to project_id."""
         import time
         from psycopg2.extras import execute_values
 
@@ -576,64 +610,88 @@ class PgVectorDatabase(VectorDatabase):
         for vec_id, embedding, text, meta in zip(ids, embeddings, texts, metadata):
             values.append((
                 vec_id,
+                project_id,
                 embedding.tolist(),
                 text,
                 json.dumps(meta)
             ))
 
-        # Insert into database
-        with self.conn.cursor() as cur:
-            execute_values(
-                cur,
-                f"""
-                INSERT INTO {self.table_name} (id, embedding, text, metadata)
-                VALUES %s
-                ON CONFLICT (id) DO UPDATE SET
-                    embedding = EXCLUDED.embedding,
-                    text = EXCLUDED.text,
-                    metadata = EXCLUDED.metadata
-                """,
-                values,
-                template="(%s, %s::vector, %s, %s::jsonb)"
-            )
+        # Insert into database — acquire/release per-call for thread safety (ISSUE_001)
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    f"""
+                    INSERT INTO {self.table_name} (id, project_id, embedding, text, metadata)
+                    VALUES %s
+                    ON CONFLICT (id) DO UPDATE SET
+                        project_id = EXCLUDED.project_id,
+                        embedding  = EXCLUDED.embedding,
+                        text       = EXCLUDED.text,
+                        metadata   = EXCLUDED.metadata
+                    """,
+                    values,
+                    template="(%s, %s::uuid, %s::vector, %s, %s::jsonb)"
+                )
+        finally:
+            self._put_conn(conn)
 
         return ids
 
     def search(
         self,
         query_embedding: np.ndarray,
-        top_k: int = 3
+        top_k: int = 3,
+        project_id: str = None
     ) -> List[Tuple[str, str, Dict[str, Any], float]]:
-        """Search pgvector for similar vectors using cosine similarity."""
+        """Search pgvector for similar vectors, optionally scoped to project_id."""
         if query_embedding.ndim == 1:
             query_vector = query_embedding.tolist()
         else:
             query_vector = query_embedding[0].tolist()
 
-        with self.conn.cursor() as cur:
-            # Use cosine similarity (1 - cosine distance)
-            cur.execute(f"""
-                SELECT
-                    id,
-                    text,
-                    metadata,
-                    1 - (embedding <=> %s::vector) AS similarity
-                FROM {self.table_name}
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-            """, (query_vector, query_vector, top_k))
+        # Acquire/release per-call for thread safety (ISSUE_001)
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                if project_id:
+                    cur.execute(f"""
+                        SELECT
+                            id,
+                            text,
+                            metadata,
+                            1 - (embedding <=> %s::vector) AS similarity
+                        FROM {self.table_name}
+                        WHERE project_id = %s::uuid
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                    """, (query_vector, project_id, query_vector, top_k))
+                else:
+                    cur.execute(f"""
+                        SELECT
+                            id,
+                            text,
+                            metadata,
+                            1 - (embedding <=> %s::vector) AS similarity
+                        FROM {self.table_name}
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                    """, (query_vector, query_vector, top_k))
 
-            results = []
-            for row in cur.fetchall():
-                vec_id, text, metadata, similarity = row
-                results.append((
-                    vec_id,
-                    text,
-                    metadata,
-                    float(similarity)
-                ))
+                results = []
+                for row in cur.fetchall():
+                    vec_id, text, metadata, similarity = row
+                    results.append((
+                        vec_id,
+                        text,
+                        metadata,
+                        float(similarity)
+                    ))
 
-            return results
+                return results
+        finally:
+            self._put_conn(conn)
 
     def save(self, path: str = None) -> None:
         """pgvector auto-persists (it's a database)."""
@@ -643,17 +701,102 @@ class PgVectorDatabase(VectorDatabase):
         """pgvector auto-loads (it's a database)."""
         print(f"pgvector auto-loads from PostgreSQL database")
 
-    def reset(self) -> None:
-        """Clear all vectors from pgvector table."""
-        with self.conn.cursor() as cur:
-            cur.execute(f"DELETE FROM {self.table_name}")
-        print(f"pgvector table {self.table_name} reset")
+    def reset(self, project_id: str = None) -> None:
+        """Clear vectors (and FAQs) scoped to project_id, or all rows if None (ISSUE_003)."""
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                if project_id:
+                    cur.execute(
+                        f"DELETE FROM {self.table_name} WHERE project_id = %s::uuid",
+                        (project_id,)
+                    )
+                    cur.execute(
+                        "DELETE FROM faq_entries WHERE project_id = %s::uuid",
+                        (project_id,)
+                    )
+                    print(f"pgvector: cleared documents and FAQs for project {project_id}")
+                else:
+                    cur.execute(f"DELETE FROM {self.table_name}")
+                    cur.execute("DELETE FROM faq_entries")
+                    print(f"pgvector table {self.table_name} and faq_entries reset (all rows)")
+        finally:
+            self._put_conn(conn)
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Return pgvector statistics."""
-        with self.conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
-            count = cur.fetchone()[0]
+    def delete_document(self, document_id: str, project_id: str) -> str:
+        """Delete all chunks for a document and return its filename (ISSUE_024).
+        Returns the filename so the caller can also delete associated FAQs."""
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                # Get filename before deleting
+                cur.execute(
+                    f"SELECT metadata->>'filename' FROM {self.table_name} "
+                    "WHERE metadata->>'document_id' = %s AND project_id = %s::uuid LIMIT 1",
+                    (document_id, project_id)
+                )
+                row = cur.fetchone()
+                filename = row[0] if row else ""
+
+                # Delete all chunks for this document
+                cur.execute(
+                    f"DELETE FROM {self.table_name} "
+                    "WHERE metadata->>'document_id' = %s AND project_id = %s::uuid",
+                    (document_id, project_id)
+                )
+        finally:
+            self._put_conn(conn)
+        return filename
+
+    def get_documents_list(self, project_id: str) -> List[Dict[str, Any]]:
+        """Return distinct uploaded documents for a project (ISSUE_018).
+        Returns [{filename, document_id, chunk_count, upload_time}] ordered by upload_time desc."""
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        metadata->>'filename'     AS filename,
+                        metadata->>'document_id'  AS document_id,
+                        COUNT(*)                  AS chunk_count,
+                        MIN((metadata->>'upload_time')::float) AS upload_time
+                    FROM {self.table_name}
+                    WHERE project_id = %s::uuid
+                    GROUP BY metadata->>'filename', metadata->>'document_id'
+                    ORDER BY upload_time DESC
+                    """,
+                    (project_id,)
+                )
+                rows = cur.fetchall()
+        finally:
+            self._put_conn(conn)
+
+        return [
+            {
+                "filename": row[0] or "unknown",
+                "document_id": row[1] or "",
+                "chunk_count": int(row[2]),
+                "upload_time": float(row[3]) if row[3] else 0.0,
+            }
+            for row in rows
+        ]
+
+    def get_stats(self, project_id: str = None) -> Dict[str, Any]:
+        """Return pgvector statistics, optionally scoped to project_id (ISSUE_007)."""
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                if project_id:
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM {self.table_name} WHERE project_id = %s::uuid",
+                        (project_id,)
+                    )
+                else:
+                    cur.execute(f"SELECT COUNT(*) FROM {self.table_name}")
+                count = cur.fetchone()[0]
+        finally:
+            self._put_conn(conn)
 
         return {
             "provider": "pgvector",
@@ -663,9 +806,17 @@ class PgVectorDatabase(VectorDatabase):
         }
 
     def __del__(self):
-        """Close database connection."""
-        if hasattr(self, 'conn'):
-            self.conn.close()
+        """Return dedicated connection to pool, then close the pool."""
+        if hasattr(self, 'pool') and hasattr(self, 'conn'):
+            try:
+                self.pool.putconn(self.conn)
+            except Exception:
+                pass
+        if hasattr(self, 'pool'):
+            try:
+                self.pool.closeall()
+            except Exception:
+                pass
 
 
 # =============================================================================

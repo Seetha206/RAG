@@ -90,6 +90,52 @@ class LocalEmbeddings(EmbeddingProvider):
 
 
 # =============================================================================
+# FASTEMBED (ONNX-based, no PyTorch, CPU-optimized)
+# =============================================================================
+
+
+class FastEmbedEmbeddings(EmbeddingProvider):
+    """
+    Local embedding provider using fastembed (ONNX Runtime).
+    Same models as sentence-transformers but no PyTorch dependency.
+    ~50MB install vs 6.8GB for torch+cuda. Faster on CPU.
+
+    Supported models (same names as sentence-transformers):
+        - BAAI/bge-small-en-v1.5:  384 dims
+        - BAAI/bge-base-en-v1.5:   768 dims
+        - BAAI/bge-large-en-v1.5: 1024 dims (recommended)
+    """
+
+    DIMENSION_MAP = {
+        "BAAI/bge-small-en-v1.5": 384,
+        "BAAI/bge-base-en-v1.5": 768,
+        "BAAI/bge-large-en-v1.5": 1024,
+    }
+
+    def __init__(self, model_name: str = "BAAI/bge-large-en-v1.5"):
+        try:
+            from fastembed import TextEmbedding
+        except ImportError:
+            raise ImportError("fastembed not installed. Run: pip install fastembed")
+
+        self.model_name = model_name
+        self.model = TextEmbedding(model_name)
+        self.dimensions = self.DIMENSION_MAP.get(model_name, 1024)
+
+    def embed(self, texts: Union[str, List[str]]) -> np.ndarray:
+        if isinstance(texts, str):
+            texts = [texts]
+        embeddings = list(self.model.embed(texts))
+        return np.array(embeddings, dtype=np.float32)
+
+    def get_dimensions(self) -> int:
+        return self.dimensions
+
+    def get_model_name(self) -> str:
+        return self.model_name
+
+
+# =============================================================================
 # OPENAI EMBEDDING PROVIDERS (Paid, cloud-based)
 # =============================================================================
 
@@ -255,6 +301,10 @@ def get_embedding_provider(config: dict) -> EmbeddingProvider:
     if provider == "local":
         print(f"Initializing local embeddings: {model}")
         return LocalEmbeddings(model_name=model)
+
+    elif provider == "fastembed":
+        print(f"Initializing FastEmbed (ONNX) embeddings: {model}")
+        return FastEmbedEmbeddings(model_name=model)
 
     elif provider == "openai":
         print(f"Initializing OpenAI embeddings: {model}")

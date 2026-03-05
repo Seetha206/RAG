@@ -6,6 +6,12 @@ export default {
       colors: {
         primary: '#0d6cf2',
         'bg-light': '#f5f7f8',
+        brand: {
+          primary: '#fb7185',    // Midnight Rose — buttons, active nodes, chat header
+          secondary: '#94a3b8',  // Soft Slate — icons, text highlights
+          glow: '#1e293b',       // Warm Charcoal — cursor gradient spread
+          dark: '#0f172a',       // Deep Charcoal — base background
+        },
         chat: {
           bg: '#f5f7f8',
           sidebar: '#ffffff',

@@ -12,13 +12,6 @@ const ArrowRight = () => (
   </svg>
 );
 
-const ExternalLink = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-    <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-  </svg>
-);
-
 /* ── Nav ────────────────────────────────────────────────────────── */
 function Nav() {
   return (
@@ -56,8 +49,9 @@ function Hero() {
         </h1>
 
         <p className="hero-sub">
-          SellBot AI reads your property PDFs, brochures, and price lists
-          — then answers any question instantly using Retrieval-Augmented Generation.
+          SellBot AI reads your property PDFs, brochures, and price lists — auto-generates
+          an interactive FAQ mind map, then answers any question instantly using
+          FAQ search or Retrieval-Augmented Generation.
         </p>
 
         <div className="hero-actions">
@@ -68,10 +62,10 @@ function Hero() {
 
         <div className="stats-strip">
           {[
-            { value: '5+', label: 'File types supported' },
+            { value: '4', label: 'File formats' },
             { value: '<1s', label: 'Query response time' },
             { value: '1024', label: 'Embedding dimensions' },
-            { value: '6', label: 'REST API endpoints' },
+            { value: '10+', label: 'REST API endpoints' },
             { value: '∞', label: 'Documents uploadable' },
           ].map(s => (
             <div className="stat-item" key={s.label}>
@@ -151,7 +145,7 @@ const STEPS = [
   {
     num: 1, icon: '📄',
     title: 'Upload Document',
-    desc: 'PDF, DOCX, Excel or TXT — streamed as bytes, never written to disk.',
+    desc: 'PDF, DOCX, Excel or TXT — streamed as bytes, never written to disk. Scoped to a project.',
     tag: '/upload endpoint',
   },
   {
@@ -163,20 +157,26 @@ const STEPS = [
   {
     num: 3, icon: '🔢',
     title: 'Embed Vectors',
-    desc: 'Each chunk converted to a 1024-dim semantic vector by BAAI/bge-large-en-v1.5.',
-    tag: 'sentence-transformers',
+    desc: 'Each chunk converted to a 1024-dim semantic vector by BAAI/bge-large-en-v1.5 via FastEmbed ONNX — no GPU needed.',
+    tag: 'fastembed ONNX',
   },
   {
     num: 4, icon: '🗄️',
     title: 'Store in pgvector',
-    desc: 'Vectors and metadata stored in PostgreSQL with the pgvector extension and HNSW index.',
-    tag: 'pgvector',
+    desc: 'Vectors and metadata stored in PostgreSQL with HNSW index, scoped per project namespace.',
+    tag: 'pgvector · HNSW',
   },
   {
-    num: 5, icon: '💬',
+    num: 5, icon: '🧩',
+    title: 'Auto-generate FAQs',
+    desc: 'LLM reads the full document text and extracts up to 25 Q&A pairs across 7 categories.',
+    tag: 'Gemini Flash · faq_generator.py',
+  },
+  {
+    num: 6, icon: '💬',
     title: 'Query & Answer',
-    desc: 'Question embedded → top-k chunks retrieved by cosine similarity → Gemini generates answer.',
-    tag: 'Gemini Flash LLM',
+    desc: 'FAQ-first: PostgreSQL full-text search returns instant answers. No FAQ match? Embed → cosine similarity → Gemini generates a grounded answer.',
+    tag: 'FAQ → RAG fallback',
   },
 ];
 
@@ -187,7 +187,7 @@ function Pipeline() {
         <p className="section-label">Under the hood</p>
         <h2 className="section-title">How It <span className="grad-text">Works</span></h2>
         <p className="section-sub" style={{ margin: '0 auto' }}>
-          Five steps from document upload to AI-generated answer — all happening in under a second.
+          Six steps from document upload to AI-generated answer — FAQ-first for instant replies, RAG fallback for everything else.
         </p>
 
         <div className="pipeline-steps">
@@ -212,48 +212,48 @@ const BUILT = [
     icon: '⚡',
     iconBg: 'rgba(16,185,129,.15)',
     title: 'FastAPI Backend',
-    sub: 'Python 3.11 · REST API',
+    sub: 'Python 3.11 · REST API · Multi-tenant',
     features: [
-      'Async endpoints for upload, query, reset, status',
-      'In-memory document parsing — no disk writes',
-      'Plugin-based design: swap any provider via config.py',
-      'Auto-loads embedder, vector DB, and LLM at startup',
+      'Multi-project support: each project gets an isolated vector namespace',
+      'In-memory document parsing — no disk writes ever',
+      'Plugin-based design: swap embedding, vector DB, or LLM via config.py',
+      'FAQ auto-generation on every upload — non-blocking, non-fatal',
     ],
   },
   {
     icon: '🗄️',
     iconBg: 'rgba(6,182,212,.15)',
     title: 'pgvector Database',
-    sub: 'PostgreSQL · Vector Search',
+    sub: 'PostgreSQL · Vector + Full-text Search',
     features: [
       'HNSW index for fast approximate nearest-neighbour search',
-      'Cosine similarity scoring (0–100%)',
-      'Stores text, metadata, and 384-dim vectors together',
-      'Internal Railway network — never exposed to internet',
+      '1024-dim cosine similarity scoring per project namespace',
+      'Separate faq_entries table with GIN full-text search index',
+      'projects table: UUID primary keys, namespace isolation, CASCADE deletes',
     ],
   },
   {
     icon: '🧠',
     iconBg: 'rgba(139,92,246,.15)',
     title: 'Gemini Flash LLM',
-    sub: 'Google Gemini · Answer Generation',
+    sub: 'Google Gemini 2.5 Flash · Answer Generation',
     features: [
-      'Receives top-k retrieved chunks as grounded context',
-      'Structured system prompt prevents hallucination',
-      'Returns markdown-formatted answer with source references',
-      'Swappable with GPT-4, Claude, or any LLM via config',
+      'Extracts up to 25 FAQ pairs per document across 7 fixed categories',
+      'Receives top-k retrieved chunks as grounded context for RAG answers',
+      'Structured system prompt grounds answers in your documents',
+      'Swappable with GPT-4, Claude, Ollama, or any LLM via config',
     ],
   },
   {
     icon: '🎨',
     iconBg: 'rgba(245,158,11,.15)',
-    title: 'React Frontend',
-    sub: 'React 19 · Redux · TypeScript',
+    title: 'React Mind Map UI',
+    sub: 'React 19 · Redux · TypeScript · SVG',
     features: [
-      'Real-time chat UI with markdown and code rendering',
-      'Redux Toolkit + redux-persist (chat survives reloads)',
-      'File upload with drag-and-drop support',
-      'Expandable source citations with similarity scores',
+      'Interactive SVG mind map: Root → Category → FAQ questions',
+      'AI chat panel slides in from the right with FAQ-match badge',
+      'Redux Toolkit + redux-persist (state survives reloads)',
+      'framer-motion animated modals for FAQ answer previews',
     ],
   },
 ];
@@ -267,7 +267,7 @@ function WhatWeBuilt() {
           A Full-Stack <span className="grad-text">RAG System</span>
         </h2>
         <p className="section-sub">
-          Four layers working together — from document ingestion to AI-powered answers.
+          Four layers working together — from multi-project document ingestion to FAQ mind map and AI-powered answers.
         </p>
 
         <div className="built-grid">
@@ -295,10 +295,10 @@ function WhatWeBuilt() {
 const TECH = [
   { icon: '🐍', name: 'Python 3.11', role: 'Backend runtime' },
   { icon: '⚡', name: 'FastAPI', role: 'REST API framework' },
-  { icon: '🤗', name: 'sentence-transformers', role: 'Local embeddings' },
-  { icon: '🐘', name: 'PostgreSQL', role: 'Vector database' },
-  { icon: '🔷', name: 'pgvector', role: 'Vector extension' },
-  { icon: '✨', name: 'Gemini Flash', role: 'LLM answer generation' },
+  { icon: '🚀', name: 'FastEmbed ONNX', role: 'Local embeddings · no GPU' },
+  { icon: '🐘', name: 'PostgreSQL', role: 'Vector + full-text database' },
+  { icon: '🔷', name: 'pgvector', role: 'Vector extension · HNSW' },
+  { icon: '✨', name: 'Gemini 2.5 Flash', role: 'LLM · FAQ + RAG answers' },
   { icon: '⚛️', name: 'React 19', role: 'Frontend framework' },
   { icon: '🏪', name: 'Redux Toolkit', role: 'State management' },
   { icon: '📘', name: 'TypeScript', role: 'Type safety' },
@@ -391,7 +391,7 @@ function Footer() {
     <footer className="footer">
       <div className="container">
         <p className="footer-text">
-          Built with ❤️ using FastAPI · pgvector · React · Gemini
+          Built with ❤️ using FastAPI · pgvector · FastEmbed · React 19 · Gemini 2.5 Flash
         </p>
       </div>
     </footer>

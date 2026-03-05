@@ -1,0 +1,310 @@
+{
+  "info": {
+    "name": "SellBot RAG API",
+    "description": "Complete API collection for SellBot RAG System — Projects, Documents, Query, FAQs, and System endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "sellbot-rag-api-v1"
+  },
+  "variable": [
+    { "key": "BASE_URL",    "value": "http://localhost:8000",                      "type": "string" },
+    { "key": "PROJECT_ID",  "value": "PASTE-YOUR-PROJECT-UUID-HERE",              "type": "string" },
+    { "key": "DOCUMENT_ID", "value": "PASTE-YOUR-DOCUMENT-ID-HERE",               "type": "string" },
+    { "key": "API_KEY",     "value": "",                                           "type": "string",
+      "description": "Leave empty if API_KEY env var is not set on the server" }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key",   "value": "X-API-Key",      "type": "string" },
+      { "key": "value", "value": "{{API_KEY}}",     "type": "string" },
+      { "key": "in",    "value": "header",          "type": "string" }
+    ]
+  },
+  "item": [
+
+    {
+      "name": "🔧 System",
+      "item": [
+        {
+          "name": "Root — API Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/", "host": ["{{BASE_URL}}"], "path": [""] },
+            "description": "Returns all available endpoints and API version."
+          }
+        },
+        {
+          "name": "Status — System Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/status", "host": ["{{BASE_URL}}"], "path": ["status"] },
+            "description": "Returns total documents, total chunks, active embedding model, vector DB provider, and LLM model."
+          }
+        },
+        {
+          "name": "Reset — Clear All Data (Global)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/reset", "host": ["{{BASE_URL}}"], "path": ["reset"] },
+            "description": "Deletes ALL vectors across all projects. Cannot be undone."
+          }
+        },
+        {
+          "name": "Reset — Clear Project Data Only",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/reset?project_id={{PROJECT_ID}}",
+              "host": ["{{BASE_URL}}"],
+              "path": ["reset"],
+              "query": [{ "key": "project_id", "value": "{{PROJECT_ID}}" }]
+            },
+            "description": "Deletes vectors for a specific project only. Other projects are untouched."
+          }
+        },
+        {
+          "name": "Save — Persist FAISS Index",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/save", "host": ["{{BASE_URL}}"], "path": ["save"] },
+            "description": "Saves the FAISS index to disk. No-op for pgvector/ChromaDB (they auto-persist)."
+          }
+        },
+        {
+          "name": "Load — Restore FAISS Index",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/load", "host": ["{{BASE_URL}}"], "path": ["load"] },
+            "description": "Loads FAISS index from disk. No-op for pgvector/ChromaDB."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "📁 Projects",
+      "item": [
+        {
+          "name": "Create Project",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.project_id) {",
+                  "    pm.collectionVariables.set('PROJECT_ID', json.project_id);",
+                  "    console.log('PROJECT_ID saved:', json.project_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_name\": \"Sunrise Heights\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{BASE_URL}}/projects", "host": ["{{BASE_URL}}"], "path": ["projects"] },
+            "description": "Creates a new project. The returned project_id is auto-saved to the {{PROJECT_ID}} collection variable.\n\nResponse:\n- project_id (UUID)\n- project_name\n- vdb_namespace\n- created_at"
+          }
+        },
+        {
+          "name": "List All Projects",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/projects", "host": ["{{BASE_URL}}"], "path": ["projects"] },
+            "description": "Returns all user-created projects. Excludes the internal Default Project (vdb_namespace='default')."
+          }
+        },
+        {
+          "name": "Get Project by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/projects/{{PROJECT_ID}}",
+              "host": ["{{BASE_URL}}"],
+              "path": ["projects", "{{PROJECT_ID}}"]
+            },
+            "description": "Returns project details for a given UUID. Returns 404 if not found."
+          }
+        },
+        {
+          "name": "Delete Project",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/projects/{{PROJECT_ID}}",
+              "host": ["{{BASE_URL}}"],
+              "path": ["projects", "{{PROJECT_ID}}"]
+            },
+            "description": "Permanently deletes a project AND all its documents + FAQs (CASCADE). The Default Project cannot be deleted (returns 400)."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "📄 Documents",
+      "item": [
+        {
+          "name": "Upload Document — to Project",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Select a PDF, DOCX, XLSX, or TXT file (max 50 MB)"
+                },
+                {
+                  "key": "project_id",
+                  "value": "{{PROJECT_ID}}",
+                  "type": "text",
+                  "description": "Optional. Omit to upload to the Default Project."
+                }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/upload", "host": ["{{BASE_URL}}"], "path": ["upload"] },
+            "description": "Uploads and processes a document:\n1. Parses in-memory (no disk write)\n2. Splits into chunks\n3. Generates embeddings\n4. Stores in vector DB under the given project_id\n5. Auto-generates FAQs via LLM\n\nSupported: .pdf, .docx, .xlsx, .txt\n\nResponse includes document_id, chunks_added, faqs_generated, processing_time_ms."
+          }
+        },
+        {
+          "name": "Upload Document — to Default Project",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Select a PDF, DOCX, XLSX, or TXT file (max 50 MB)"
+                }
+              ]
+            },
+            "url": { "raw": "{{BASE_URL}}/upload", "host": ["{{BASE_URL}}"], "path": ["upload"] },
+            "description": "Upload without project_id — goes to the Default Project automatically."
+          }
+        },
+        {
+          "name": "List Documents in Project",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/projects/{{PROJECT_ID}}/documents",
+              "host": ["{{BASE_URL}}"],
+              "path": ["projects", "{{PROJECT_ID}}", "documents"]
+            },
+            "description": "Returns all documents uploaded to a project with:\n- document_id\n- filename\n- chunk_count\n- upload_time\n\nUse document_id from this response to delete a specific file."
+          }
+        },
+        {
+          "name": "Delete Document from Project",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/projects/{{PROJECT_ID}}/documents/{{DOCUMENT_ID}}",
+              "host": ["{{BASE_URL}}"],
+              "path": ["projects", "{{PROJECT_ID}}", "documents", "{{DOCUMENT_ID}}"]
+            },
+            "description": "Deletes a single document's vector chunks AND its upload-generated FAQs.\n\nNOTE: user_chat FAQs (from AI chat conversations) are NOT deleted — they come from real user questions, not the document.\n\nGet DOCUMENT_ID from the List Documents endpoint."
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "🤖 Query & FAQs",
+      "item": [
+        {
+          "name": "Query — Project Scoped",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What are the available BHK configurations and their prices?\",\n  \"project_id\": \"{{PROJECT_ID}}\",\n  \"top_k\": 10,\n  \"global_search\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{BASE_URL}}/query", "host": ["{{BASE_URL}}"], "path": ["query"] },
+            "description": "Queries the knowledge base for a specific project.\n\nPipeline:\n1. Normalize query (BHK, sqft, Crores shortcuts)\n2. Embed query\n3. Vector search (top_k chunks, similarity > 0.15)\n4. LLM generates answer from chunks\n\nResponse includes: answer, sources (with similarity_score per chunk), processing_time_ms, source_type."
+          }
+        },
+        {
+          "name": "Query — Global (All Projects)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"Which project has the best amenities?\",\n  \"global_search\": true,\n  \"top_k\": 10\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{BASE_URL}}/query", "host": ["{{BASE_URL}}"], "path": ["query"] },
+            "description": "Searches across ALL projects' documents. Useful for the Dashboard-level chat.\n\nSet global_search: true — project_id is ignored in this mode."
+          }
+        },
+        {
+          "name": "Query — Default Project",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is the price of a 2BHK flat?\",\n  \"top_k\": 10\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{BASE_URL}}/query", "host": ["{{BASE_URL}}"], "path": ["query"] },
+            "description": "Omitting project_id defaults to the Default Project."
+          }
+        },
+        {
+          "name": "Get FAQs — Project Scoped",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/faqs?project_id={{PROJECT_ID}}",
+              "host": ["{{BASE_URL}}"],
+              "path": ["faqs"],
+              "query": [{ "key": "project_id", "value": "{{PROJECT_ID}}" }]
+            },
+            "description": "Returns all FAQ entries grouped by category for the mind map UI.\n\nCategories: Pricing, Amenities, Location, Process, Specifications, Security, General\n\nEach FAQ has: id, question, answer, category, source_file ('filename.pdf' for uploads, 'user_chat' for AI chat auto-saves)."
+          }
+        },
+        {
+          "name": "Get FAQs — Default Project",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{BASE_URL}}/faqs", "host": ["{{BASE_URL}}"], "path": ["faqs"] },
+            "description": "Returns FAQs for the Default Project (no project_id param needed)."
+          }
+        }
+      ]
+    }
+
+  ]
+}

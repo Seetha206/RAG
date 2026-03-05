@@ -30,8 +30,14 @@ export const ORG_URLS = {
 } as const;
 
 export const RAG_URLS = {
-  QUERY:  '/query',
-  UPLOAD: '/upload',
-  STATUS: '/status',
-  RESET:  '/reset',
+  QUERY:             '/query',
+  UPLOAD:            '/upload',
+  STATUS:            '/status',
+  RESET:             '/reset',
+  FAQS:              '/faqs',
+  FAQ_DELETE:        (id: number) => `/faqs/${id}`,
+  FAQ_CHAT_CLEAR:    '/faqs/chat',
+  PROJECTS:          '/projects',
+  PROJECT_DOCUMENTS:       (id: string) => `/projects/${id}/documents`,
+  PROJECT_DOCUMENT_DELETE: (projectId: string, documentId: string) => `/projects/${projectId}/documents/${documentId}`,
 } as const;

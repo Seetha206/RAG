@@ -15,6 +15,7 @@ import uiReducer from './slices/uiSlice';
 import organizationReducer from './slices/organizationSlice';
 import profileReducer from './slices/profileSlice';
 import chatReducer from './slices/chatSlice';
+import faqReducer from './slices/faqSlice';
 
 const rootReducer = combineReducers({
   auth: authReducer,
@@ -22,6 +23,7 @@ const rootReducer = combineReducers({
   organization: organizationReducer,
   profile: profileReducer,
   chat: chatReducer,
+  faq: faqReducer,
 });
 
 const persistConfig = {

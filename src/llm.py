@@ -18,6 +18,15 @@ def create_llm_client():
         from google import genai
         return genai.Client(api_key=LLM_CONFIG["gemini_api_key"])
 
+    elif provider == "ollama":
+        # No external client needed — Ollama is a local HTTP server
+        # Prerequisites: ollama serve (in separate terminal)
+        #                ollama pull sam860/LFM2:1.2b
+        return {
+            "type": "ollama",
+            "base_url": LLM_CONFIG.get("ollama_base_url", "http://localhost:11434")
+        }
+
     elif provider == "openai":
         from openai import OpenAI
         return OpenAI(api_key=LLM_CONFIG["openai_api_key"])
@@ -60,6 +69,17 @@ def generate_answer(llm_client, query: str, relevant_chunks: List[tuple]) -> str
             contents=prompt
         )
         return response.text
+
+    elif LLM_CONFIG["provider"] == "ollama":
+        import httpx
+        base_url = llm_client.get("base_url", "http://localhost:11434")
+        response = httpx.post(
+            f"{base_url}/api/generate",
+            json={"model": LLM_CONFIG["model"], "prompt": prompt, "stream": False},
+            timeout=120.0
+        )
+        response.raise_for_status()
+        return response.json()["response"]
 
     elif LLM_CONFIG["provider"] == "openai":
         response = llm_client.chat.completions.create(

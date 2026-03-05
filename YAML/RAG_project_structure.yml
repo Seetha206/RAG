@@ -1,0 +1,461 @@
+################################################################################
+# SellBot AI RAG — Project Structure Reference
+# Version: 1.0.0  (as of 2026-03-05)
+# Purpose: Complete directory tree and file-role reference for the entire repo.
+#          Backend (Python/FastAPI) + Frontend (React/TypeScript) + Docs + YAML
+################################################################################
+
+project:
+  name: SellBot AI RAG System
+  root: "python/RAG/"  # relative to home workspace
+  git_branch: main
+  description: >
+    AI-powered real estate Sales Operating System.
+    Modular RAG API (FastAPI) with multi-project (multi-tenant) support,
+    FAQ auto-generation, pgvector storage, and an SVG mind map React frontend.
+
+# ==============================================================================
+# TOP-LEVEL FILES
+# ==============================================================================
+
+root_files:
+  app.py:
+    role: FastAPI server entry point
+    responsibilities:
+      - Route definitions (all HTTP endpoints)
+      - Global state init at startup (embedder, vector_db, llm_client, db_conn, default_project_id)
+      - Startup event handler
+    key_endpoints:
+      - "POST /projects, GET /projects, GET /projects/{id}, DELETE /projects/{id}"
+      - "POST /upload"
+      - "POST /query"
+      - "GET /faqs"
+      - "DELETE /faqs/chat"
+      - "DELETE /faqs/{faq_id}"
+      - "GET /status"
+      - "DELETE /reset"
+      - "POST /save, POST /load"
+
+  config.py:
+    role: All provider selection and tuning parameters
+    sections:
+      EMBEDDING_CONFIG: "provider, model name, dimensions (must match vector DB)"
+      VECTOR_DB_CONFIG: "provider (pgvector default), connection string, table name"
+      LLM_CONFIG: "provider (ollama default), model, base_url"
+      RAG_CONFIG: "chunk_size=800, chunk_overlap=200, top_k=10, similarity_threshold=0.15, system_prompt"
+      DOCUMENT_CONFIG: "supported_formats, max_file_size_mb"
+
+  requirements_api.txt: "Primary dependency file for API server (cloud packages commented out)"
+  requirements_production.txt: "Adds gunicorn + monitoring for prod"
+  requirements.txt: "Minimal/legacy — not used for API"
+
+  .env: "Active environment variables (gitignored)"
+  .env.example: "Template for environment variables"
+  CLAUDE.md: "Claude Code project instructions (architecture, commands, conventions)"
+  README.md: "Project overview for new developers"
+  SellBot_RAG_API.postman_collection.json: "Postman collection for all API endpoints"
+  multi_project_rag_architecture_diagram.md: "Architecture diagram in Mermaid markdown"
+  RAG.zip: "Archived frontend build (legacy)"
+
+# ==============================================================================
+# src/ — CORE PYTHON LIBRARY
+# ==============================================================================
+
+src/:
+  __init__.py: "Re-exports public API from all modules"
+
+  embeddings.py:
+    role: Embedding provider abstraction
+    classes:
+      EmbeddingProvider: "ABC — embed(text), get_dimensions(), get_model_name()"
+      LocalEmbeddings: "fastembed/ONNX (default) — BAAI/bge-large-en-v1.5, 1024 dims"
+      OpenAIEmbeddings: "text-embedding-3-small / text-embedding-ada-002"
+      CohereEmbeddings: "embed-english-v3.0"
+    factory: "get_embedding_provider() — reads EMBEDDING_CONFIG"
+
+  vector_databases.py:
+    role: Vector database abstraction
+    classes:
+      VectorDatabase: "ABC — add(), search(), save(), load(), reset(), get_stats()"
+      PgVectorDatabase: "PostgreSQL + pgvector (default) — HNSW index, cosine similarity"
+      FAISSDatabase: "Local FAISS index — L2 similarity"
+      ChromaDBDatabase: "ChromaDB"
+      PineconeDatabase: "Pinecone (cloud)"
+    factory: "get_vector_database() — reads VECTOR_DB_CONFIG"
+    not_implemented: ["weaviate", "qdrant"]  # in config but no class yet
+    similarity_scoring:
+      faiss: "1/(1+L2)"
+      pgvector: "1 - cosine_distance"
+      pinecone: "native cosine"
+
+  document_parsers.py:
+    role: In-memory document parsing (no disk writes)
+    parsers: [PDF via pypdf, DOCX via python-docx, XLSX via openpyxl, TXT]
+    entry_point: "auto_detect_and_parse(bytes, filename) -> str"
+    utilities: "chunk_text(text, chunk_size, chunk_overlap), clean_text(text)"
+
+  models.py:
+    role: Pydantic request/response models
+    models:
+      - QueryRequest:      "{question, top_k?, project_id?}"
+      - QueryResponse:     "{answer, sources, processing_time_ms, source_type}"
+      - UploadResponse:    "{status, message, document_id, filename, chunks_added, total_chunks, faqs_generated}"
+      - StatusResponse:    "System health info"
+      - FAQEntry:          "{id, question, answer, category, source_file}"
+      - FAQCategoryData:   "{name, color, icon, faqs[]}"
+      - FAQsResponse:      "{categories[], total}"
+      - ProjectCreate:     "{project_name}"
+      - ProjectResponse:   "{project_id, project_name, vdb_namespace, created_at}"
+      - ProjectListResponse: "{projects[], total}"
+
+  llm.py:
+    role: LLM client init and answer generation
+    functions:
+      create_llm_client: "Factory — returns provider-specific client object"
+      generate_answer: "Dispatcher — routes to correct provider generate call"
+    providers_implemented: [ollama, gemini, openai, anthropic, cohere]
+    providers_not_implemented: [groq]  # documented in LLM_OPTIONS.md
+    ollama_note: "Client is plain dict {type, base_url} — not an SDK object. Uses httpx."
+
+  query_utils.py:
+    role: Query normalization for real estate shorthand
+    function: "normalize_query(query) — BHK, sqft, Crores, Lakhs, Rs/INR"
+
+  faq_db.py:
+    role: FAQ table CRUD — all PostgreSQL ops for faq_entries table
+    functions:
+      setup_faq_table: "CREATE TABLE IF NOT EXISTS faq_entries + GIN index"
+      store_faqs: "Bulk INSERT from document upload"
+      get_all_faqs: >
+        Returns FAQsResponse grouped by category.
+        IMPORTANT: General category filtered to source_file='user_chat' only.
+        Document FAQs categorized as General by LLM are excluded from output.
+      search_faq: "Full-text search with ts_rank (GIN index). Match threshold: rank > 0.01"
+      upsert_chat_faq: >
+        ILIKE case-insensitive match on question.
+        If exists: UPDATE answer. If new: INSERT.
+        Returns 'updated' | 'inserted'. Used for AI chat Q&A storage.
+      delete_faq_by_id: "DELETE single FAQ by PK, scoped to project_id"
+      delete_faqs_by_file: "DELETE all FAQs for a source_file (used on document delete)"
+      delete_chat_faqs: "DELETE all user_chat FAQs for a project. Returns deleted count."
+
+  faq_generator.py:
+    role: LLM-direct FAQ extraction from uploaded documents
+    function: "generate_faqs(text, llm_client, source_file, max_faqs=25)"
+    behavior:
+      - Truncates input to 50,000 chars
+      - Sends full text directly to LLM (bypasses RAG/vector search)
+      - Returns validated [{question, answer, category}] list
+      - Non-fatal — upload succeeds even if FAQ generation fails
+    categories: [Pricing, Amenities, Location, Process, Specifications, Security, General]
+
+  project_manager.py:
+    role: Project CRUD — projects table operations
+    functions:
+      create_project: "INSERT into projects table, returns ProjectResponse"
+      list_projects: "SELECT all (excludes Default Project from list)"
+      get_project: "SELECT single project by UUID"
+      delete_project: "DELETE project + CASCADE to rag_documents + faq_entries"
+      get_or_create_default_project: "Called at startup — guarantees fallback project"
+
+# ==============================================================================
+# scripts/ — UTILITY SCRIPTS
+# ==============================================================================
+
+scripts/:
+  migrate_multiproject.py: >
+    One-time DB migration (idempotent). Adds project_id columns to existing
+    rag_documents and faq_entries tables. Creates Default Project. Run once on
+    existing installations — new installs auto-setup via PgVectorDatabase._setup_database().
+  generate_project_docs.py: "Generates test real estate documents (10 project folders)"
+  generate_docs.py: "Legacy document generator (flat files)"
+  inspect_db.py: "Inspect vector DB contents and stats"
+  inspect_faiss.py: "FAISS index inspection"
+  migrate_multiproject.py: "Multi-project DB migration (idempotent)"
+  pinecone_rag.py: "Pinecone integration example"
+  simple_rag.py: "End-to-end RAG demo (FAISS + Gemini, no API server)"
+
+# ==============================================================================
+# RAG/ — REACT FRONTEND
+# ==============================================================================
+
+RAG/:
+  description: "React 19 + TypeScript + Vite + Tailwind v3 frontend (mind map UI)"
+  dev_port: 3000
+  config_files:
+    vite.config.ts: "Dev server config, 13 path aliases (@, @components, @pages, etc.)"
+    tailwind.config.js: "Custom brand.* tokens for Midnight Rose dark theme"
+    tsconfig.app.json: "TypeScript config (verbatimModuleSyntax, strict)"
+    eslint.config.js: "ESLint 9 flat config"
+    .prettierrc: "tab_width:2, single_quote, trailing_comma:all"
+    postcss.config.js: "Tailwind + autoprefixer"
+    index.html: "Vite entry HTML — loads gradient-cursor div"
+    .env.development: "VITE_SERVER_URL=http://localhost:8000"
+    .env.production: "VITE_SERVER_URL=https://services.yourapp.com"
+    .env.testlive: "VITE_SERVER_URL=https://testlive.yourapp.com"
+
+  src/:
+    App.tsx: >
+      Root component. Gradient cursor glow (mousemove/mousedown/mouseup).
+      Global header (logo, breadcrumb showing project name on project page).
+      Routes: '/' DashboardPage, '/projects/:projectId' MindMapRoute, '*' DashboardPage.
+    main.tsx: "Entry point — BrowserRouter + Redux Provider + PersistGate"
+    index.css: "Tailwind directives + glass-card + gradient-cursor utilities"
+
+    components/:
+      mindmap/:
+        MindMapView.tsx: >
+          Interactive SVG mind map. Props: {projectId, projectName, onBack}.
+          Layout constants: ROOT_X=90, CAT_X=300, SVG_WIDTH=600 (NO Q_X).
+          SVG shows root node + category nodes only. Questions in side panel.
+          State: categories, selectedCat, panelState, search, zoom, upload states,
+                 deletingFaqId, clearingChat, uploadFileIndex, uploadFileTotal.
+          Key features:
+            - Multi-file sequential upload (multiple attr on input)
+            - General category: delete per item + Clear All button
+            - AI chat panel (slides from right, project-scoped)
+            - Category legend (absolute bottom-3 left-3)
+            - Document list panel
+            - Zoom in/out controls
+        FAQAnswerModal.tsx: "framer-motion modal for FAQ answers"
+
+      chat/:
+        ChatWindow.tsx: Chat UI container
+        InputBox.tsx: Textarea with Enter-to-send
+        MessageBubble.tsx: "Markdown + FAQ/RAG source badge"
+        Sidebar.tsx: Conversation list
+        UploadButton.tsx: Upload button
+
+      common/:
+        Button/Button.tsx: Reusable button
+
+      layout/:
+        Page layout wrappers
+
+    pages/:
+      DashboardPage.tsx: >
+        Project cards grid. CARD_COLORS[7]. New project modal.
+        Global AI chat. framer-motion stagger cards.
+
+    store/:
+      index.ts: "Redux store — persist whitelist: [auth, organization, chat]"
+      slices/:
+        faqSlice.ts:          "NOT persisted — categories, total, isLoading, error"
+        authSlice.ts:         "persisted — user, token, isAuthenticated"
+        chatSlice.ts:         "persisted — conversations, activeConversationId"
+        organizationSlice.ts: "persisted — currentOrg, orgList, members"
+        profileSlice.ts:      "NOT persisted — profile"
+        uiSlice.ts:           "NOT persisted — popups, isGlobalLoading"
+
+    services/api/:
+      axiosConfig.ts: Axios instance
+      urls.ts: >
+        RAG_URLS: QUERY, UPLOAD, STATUS, RESET, FAQS, PROJECTS, PROJECT(id),
+                  FAQ_DELETE(id), FAQ_CHAT_CLEAR
+      ragService.ts: "postQuery, postUpload, getStatus"
+      faqService.ts: "getFAQs, deleteFAQ, clearChatFAQs"
+      projectService.ts: "createProject, listProjects, getProject, deleteProject"
+      authService.ts: Auth calls
+      userService.ts: Profile calls
+
+    routes/:
+      routeNames.ts: "ROUTES.DASHBOARD='/', ROUTES.PROJECT_MINDMAP=(id)=>/projects/${id}"
+
+    types/:
+      rag.types.ts:  "QueryRequest, QueryResponse (+source_type), UploadResponse (+faqs_generated)"
+      faq.types.ts:  "FAQEntry, FAQCategoryData, FAQsResponse"
+      auth.types.ts, chat.types.ts, org.types.ts, api.types.ts
+
+    hooks/:
+      redux.ts: "useAppDispatch, useAppSelector"
+
+    utils/:
+      alerts.ts, constants.ts, helpers.ts, validation.ts
+
+    functions/:
+      static_variable.ts: "Single source of truth for env config"
+      Utils.ts: "getServerUrl() env-aware resolver"
+
+    styles/:
+      global.css, reset.css, variables.css, common.css
+
+    i18n/:
+      i18n.ts: Lightweight translation (58 keys)
+
+    assets/: Static files
+
+    __tests__/:
+      setup.ts: Vitest + jest-dom
+      test-utils.tsx: "Custom render() with Provider + MemoryRouter"
+
+  dist/: "Production build output (gitignored)"
+
+# ==============================================================================
+# overview/ — MARKETING PAGE
+# ==============================================================================
+
+overview/:
+  description: "Standalone React 18 informational/marketing page (no backend)"
+  stack: "React 18, Vite, no TypeScript, no Redux"
+  entry: overview/src/App.jsx
+  dist/: Built output
+  notes: "Live demo links removed. Standalone — no API calls."
+
+# ==============================================================================
+# YAML/ — DEPLOYMENT AND SETUP CONFIG
+# ==============================================================================
+
+YAML/:
+  RAG_backend_v2.yml: >
+    Backend system reference v2.1.0 — FastAPI architecture, all endpoints,
+    query pipeline, upload pipeline, faq_db functions, LLM config, no-info guard.
+  RAG_frontend_v2.yml: >
+    Frontend system reference v2.1.0 — React architecture, MindMapView details,
+    Redux store, API services, routing, design tokens, critical gotchas.
+  RAG_project_structure.yml: >
+    This file — complete directory tree and file-role reference.
+  RAG_backend.yml: "Legacy v1 backend reference"
+  RAG_frontend.yml: "Legacy v1 frontend reference"
+  PGVECTOR_SETUP_v2.yml: "PostgreSQL + pgvector installation guide v2 (HNSW)"
+  PGVECTOR_SETUP.yml: "Legacy pgvector setup"
+  pgvector_setup.sql: "Raw SQL for pgvector setup"
+  multi_project_schema.sql: "Full DB schema with multi-project support"
+
+# ==============================================================================
+# knowledge_base/ — DOCUMENTATION
+# ==============================================================================
+
+knowledge_base/:
+  SELLBOT_SYSTEM_ARCHITECTURE.md: "Full system architecture + future phases (WhatsApp, CRM, analytics)"
+  FAQ_MINDMAP_MULTIPROJECT_IMPLEMENTATION.md: >
+    Complete implementation docs for multi-project + FAQ mind map.
+    All 5 phases, file change summary, known bugs, architecture decisions.
+  CLAUDE_EXTENDED.md: "Extended Claude Code guide with provider-switching examples"
+  PGVECTOR_SETUP.md: "PostgreSQL + pgvector installation"
+  NEW_SETUP_GUIDE.md: "Setup instructions for new developers"
+  LLM_OPTIONS.md: >
+    LLM alternatives — Groq (best free cloud, not yet implemented),
+    Ollama (local default), OpenAI, Gemini. Decision guide.
+  MULTI_PROJECT_RAG_PLAN.md: "Original 5-phase plan (status: complete as of 2026-03-01)"
+  BACKEND_DB_QUERY_REFERENCE.md: "Quick reference for common DB queries"
+  backend_retrieval_fixes.md: "All RAG pipeline fix history"
+  CHECKING_DATABASE.md: "How to inspect and verify pgvector data"
+  API_DOCUMENTATION.md: All API endpoint docs
+  OLLAMA_LFM2_GUIDE.md: "Guide for sam860/LFM2:1.2b local model"
+  HNSW_vs_IVFFlat.md: "Vector index comparison and rationale"
+  RETRIEVAL_ACCURACY_IMPROVEMENTS.md: "RAG tuning history"
+  PAGEINDEX_ANALYSIS.md: Document chunking analysis
+  EMBEDDING_MODELS.md: Embedding model comparison
+  VECTOR_DB.md: Vector database comparison
+  RAG_DEEP_DIVE.md, RAG_IMPLEMENTATION_ALTERNATIVES.md: Deep technical docs
+  QUICK_START.md, CODE_EXPLANATION.md, TECHNICAL_DEEP_DIVE.md: Developer guides
+  chunks_explained.md, semantic_questions.md: RAG concept explanations
+  similarity_percentage_explained.md, similarity_threshold_explained.md: Threshold docs
+  prompt_engineering.md: System prompt design notes
+  GEMINI.md: Gemini integration notes
+  PRODUCTION_DEPLOYMENT.md: Production deployment guide
+  PROJECT_STRUCTURE.md: "Legacy project structure doc (superseded by this file)"
+  project-structure.yaml: "Legacy YAML structure (superseded by this file)"
+  README_SIMPLE_RAG.md: Simple RAG demo docs
+
+# ==============================================================================
+# real_estate_documents/ — TEST DATA
+# ==============================================================================
+
+real_estate_documents/:
+  description: "Generated test documents for 10 real estate projects (10 folders)"
+  structure_per_project: >
+    00_original_brochure.pdf  — original project brochure
+    01_brochure.pdf           — main brochure
+    02_price_list.xlsx        — pricing spreadsheet
+    03_amenities_guide.pdf    — amenities details
+    04_faq.docx               — project FAQ document
+    (01_Sunrise_Heights also has: 05-15 floor plans, payment plan, legal docs, samples)
+  projects:
+    01_Sunrise_Heights:      "Premium Apartments — full document set (15 files)"
+    02_Green_Valley_Villas:  "Luxury Villas"
+    03_Metro_Edge_Compact_Homes: "Compact urban homes"
+    04_Royal_Orchid_Residency: "Premium residency"
+    05_Eco_Habitat_Township: "Eco-friendly township"
+    06_Lakeshore_Towers:     "Lakeside towers"
+    07_Heritage_Grand_Senior_Living: "Senior living"
+    08_Skyline_Commercial_Plaza: "Commercial space"
+    09_Palm_Grove_Plots:     "Plotted development"
+    10_Prestige_Park_Grove:  "Market report + project docs"
+
+# ==============================================================================
+# error_logs/ — ERROR TRACKING
+# ==============================================================================
+
+error_logs/:
+  description: "Manually maintained YAML error log files (app does NOT write these)"
+  naming_convention: "error_{name}_logs_{YYYYMMDD}.yml"
+  files:
+    error_seetha_logs_20260220.yml: "ERR_001–ERR_007 (chunking, FAISS, similarity)"
+    error_seetha_logs_20260223.yml: "ERR_008–ERR_011 (retrieval, UI fixes)"
+    error_seetha_logs_20260225.yml: "ERR_012–ERR_013 (Gemini key, timeout)"
+    error_seetha_logs_20260304.yml: "ERR_014–ERR_015 (async blocking, persist whitelist)"
+  schema:
+    id: "Sequential ERR_NNN — never reuse"
+    fields: [timestamp, category, description, root_cause, impact, fix_applied, files_changed, status, follow_up]
+
+# ==============================================================================
+# session_logs/ — SESSION TRACKING
+# ==============================================================================
+
+session_logs/:
+  description: "Single YAML file per user, append each session (app does NOT write these)"
+  naming_convention: "session_{name}_logs.yml"
+  files:
+    session_seetha_logs.yml: "All working sessions from project inception"
+  schema:
+    session_id: "Sequential SESSION_NNN"
+    fields: [date, duration, summary, activities[{order, timestamp, action, description, files_changed, outcome}]]
+
+# ==============================================================================
+# issue-fix/ — PRODUCTION ISSUE TRACKING
+# ==============================================================================
+
+issue-fix/:
+  multi_project_production_issues.yml: >
+    Production issues encountered during multi-project rollout.
+    Mirrors error_logs but focused on deployment and integration issues.
+
+# ==============================================================================
+# vector_store/ — FAISS PERSISTENCE (local only)
+# ==============================================================================
+
+vector_store/:
+  faiss.index: "FAISS binary index file (only used when VECTOR_DB_CONFIG.provider = 'faiss')"
+  faiss_metadata.json: "Chunk metadata for FAISS index"
+  note: "Not used in default pgvector config — gitignored"
+
+# ==============================================================================
+# venv/ — PYTHON VIRTUAL ENVIRONMENT
+# ==============================================================================
+
+venv/:
+  description: "Python 3.11+ virtual environment (gitignored)"
+  activate: "source venv/bin/activate"
+
+# ==============================================================================
+# DATABASE SCHEMA SUMMARY
+# ==============================================================================
+
+database:
+  engine: "PostgreSQL + pgvector extension"
+  tables:
+    projects:
+      columns: [project_id UUID PK, project_name VARCHAR(255), vdb_namespace VARCHAR(255) UNIQUE, created_at TIMESTAMP]
+      notes: "Default Project (vdb_namespace='default') created at startup, cannot be deleted"
+    rag_documents:
+      columns: [id TEXT PK, project_id UUID FK, embedding vector(1024), text TEXT, metadata JSONB, created_at TIMESTAMP]
+      index: "HNSW on embedding (cosine)"
+    faq_entries:
+      columns: [id SERIAL PK, project_id UUID FK, question TEXT, answer TEXT, category VARCHAR(100), source_file VARCHAR(255)]
+      index: "GIN on to_tsvector(question) for full-text search"
+      special_value: "source_file='user_chat' for AI chat-sourced FAQs"
+  default_project:
+    uuid: "77c83dc5-9472-4e40-b18c-03df24da3ecd"
+    vdb_namespace: default
+    note: "Protected — HTTP 400 on delete attempt"

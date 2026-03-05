@@ -1,4 +1,6 @@
 export const ROUTES = {
+  DASHBOARD: '/',
+  PROJECT_MINDMAP: (projectId: string) => `/projects/${projectId}`,
   LOGIN: '/login',
   SIGNUP: '/signup',
   FORGOT_PASSWORD: '/forgotpassword',

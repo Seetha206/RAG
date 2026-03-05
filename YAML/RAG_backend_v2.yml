@@ -1,0 +1,665 @@
+################################################################################
+# RAG BACKEND — v2 System Reference
+# Project: SellBot AI — Real Estate Sales Operating System
+# Phase: Multi-Project RAG + FAQ Mind Map + FAQ CRUD (2026-03-05)
+# Stack: Python 3.11+ · FastAPI · pgvector · fastembed/BAAI · Gemini
+# Previous version: RAG_backend.yml
+################################################################################
+
+project:
+  name: SellBot RAG Backend
+  description: >
+    Multi-tenant Retrieval-Augmented Generation (RAG) API. Accepts document uploads
+    (PDF, DOCX, Excel, TXT), embeds them into a project-scoped vector database,
+    auto-generates FAQ Q&A pairs via LLM, and answers queries using a
+    FAQ-first then RAG-fallback pipeline grounded on retrieved context.
+  version: "2.1.0"
+  python_version: "3.11+"
+  entry_point: app.py
+  swagger_ui: http://localhost:8000/docs
+
+# ==============================================================================
+# ARCHITECTURE
+# ==============================================================================
+
+architecture:
+  pattern: Plugin-based with Abstract Base Classes and factory functions
+  principle: >
+    Swap any provider (embedding model, vector DB, LLM) by editing config.py only.
+    No code changes needed anywhere else.
+  multi_tenancy: >
+    Each project gets isolated vector storage and FAQ data via project_id UUID FK
+    on both rag_documents and faq_entries tables. All endpoints accept optional
+    project_id; omitting it falls back to the Default Project.
+
+  pipeline:
+    upload_flow:
+      - step: 1
+        name: Receive file(s)
+        detail: "FastAPI UploadFile + optional project_id form field — bytes only, never written to disk. Multi-file: loop sequential, one per request."
+      - step: 2
+        name: Validate
+        detail: Check file size (max 50 MB) and extension (.pdf/.docx/.xlsx/.txt)
+      - step: 3
+        name: Parse
+        detail: auto_detect_and_parse() in src/document_parsers.py → returns plain text str
+      - step: 4
+        name: Clean
+        detail: clean_text() removes PDF artifacts, normalises whitespace
+      - step: 5
+        name: Chunk
+        detail: chunk_text() splits text (800 chars, 200 overlap, sentence-boundary aware)
+      - step: 6
+        name: Embed
+        detail: embedder.embed(chunks) → np.ndarray shape (n_chunks, 1024)
+      - step: 7
+        name: Store
+        detail: vector_db.add(embeddings, chunks, metadata, project_id=resolved_project_id) → pgvector
+      - step: 8
+        name: FAQ Generation (non-fatal)
+        detail: >
+          generate_faqs(full_text, llm_client, source_file) sends full document text
+          directly to LLM (bypasses RAG). Returns up to 25 {question, answer, category}
+          dicts. store_faqs() bulk-inserts into faq_entries, skipping exact duplicates.
+          If FAQ generation fails, upload still succeeds.
+
+    query_flow:
+      - step: 1
+        name: Receive question
+        detail: "QueryRequest{question, top_k?, project_id?, global_search?}"
+      - step: 2
+        name: Normalize
+        detail: normalize_query() expands real-estate shorthand (3BHK, sqft, Cr, L, Rs)
+      - step: 3
+        name: Resolve project
+        detail: Use provided project_id or fall back to default_project_id
+      - step: 4
+        name: FAQ fast-path
+        detail: >
+          search_faq(normalized_question, db_conn, project_id) — PostgreSQL full-text
+          search via ts_rank with GIN index. If rank > 0.15, return immediately with
+          source_type="faq" (no embedding, no LLM call).
+      - step: 5
+        name: RAG fallback — embed query
+        detail: embedder.embed(normalized_question) → np.ndarray shape (1, 1024)
+      - step: 6
+        name: RAG fallback — vector search
+        detail: "vector_db.search(query_embedding, top_k=10, project_id=...) → project-scoped top-k chunks"
+      - step: 7
+        name: RAG fallback — filter
+        detail: Discard chunks with similarity_score < 0.15
+      - step: 8
+        name: RAG fallback — generate answer
+        detail: generate_answer(llm_client, question, chunks) → calls Gemini (or configured LLM)
+      - step: 9
+        name: Auto-save user_chat FAQ (upsert)
+        detail: >
+          upsert_chat_faq(question, answer, conn, project_id) — ILIKE check on question.
+          If same question (case-insensitive) already exists for project → UPDATE answer.
+          If new → INSERT with category='General', source_file='user_chat'.
+          Skipped if answer matches any no-info phrase (12 patterns: "couldn't find",
+          "I don't have information", "no information available", etc.)
+      - step: 10
+        name: Return
+        detail: "QueryResponse{question, answer, sources[], processing_time_ms, source_type}"
+
+# ==============================================================================
+# FILE STRUCTURE
+# ==============================================================================
+
+file_structure:
+  app.py:
+    role: FastAPI server entry point
+    responsibilities:
+      - Registers all API routes (projects, upload, query, faqs, faq-delete, faq-chat-clear, status, reset, save, load)
+      - Initialises five module-level globals at startup (embedder, vector_db, llm_client, db_conn, default_project_id)
+      - db_conn reuses vector_db.conn (psycopg2 connection from PgVectorDatabase)
+      - CORS middleware (allow all origins in dev)
+      - Document counter (in-memory, resets on restart)
+      - Calls setup_faq_table() and get_or_create_default_project() at startup
+    globals:
+      embedder: EmbeddingProvider instance
+      vector_db: VectorDatabase instance
+      llm_client: provider-specific client object (Gemini client | Ollama dict | etc.)
+      db_conn: "psycopg2 connection (None if provider != pgvector)"
+      default_project_id: "UUID string (None if db_conn is None)"
+    no_info_guard_phrases:
+      - "couldn't find"
+      - "could not find"
+      - "i don't have information"
+      - "i don't have that information"
+      - "no information available"
+      - "no relevant information"
+      - "i'm unable to find"
+      - "i cannot find"
+      - "not found in the"
+      - "i don't know"
+      - "no data available"
+      - "unable to answer"
+
+  config.py:
+    role: Single source of truth for all provider selection and tuning
+    sections:
+      - EMBEDDING_CONFIG
+      - VECTOR_DB_CONFIG
+      - LLM_CONFIG
+      - RAG_CONFIG
+      - DOCUMENT_CONFIG
+      - API_CONFIG
+
+  src/:
+    embeddings.py:
+      exports: EmbeddingProvider (ABC), LocalEmbeddings, OpenAIEmbeddings, CohereEmbeddings, get_embedding_provider()
+      note: "fastembed provider uses ONNX Runtime (no PyTorch, ~50 MB model). Model cached at ~/.cache/fastembed/"
+      embed_signature: "embed(texts: str | List[str]) -> np.ndarray  # shape (n, dims)"
+
+    vector_databases.py:
+      exports: VectorDatabase (ABC), FAISSDatabase, ChromaDBDatabase, PineconeDatabase, PgVectorDatabase, get_vector_database()
+      search_returns: "List[Tuple[id:str, text:str, metadata:Dict, score:float]]"
+      pgvector_notes:
+        - "_setup_database() creates projects table first (FK dependency), then rag_documents with project_id column"
+        - "add() accepts project_id kwarg — inserts with project_id::uuid"
+        - "search() accepts project_id kwarg — adds WHERE project_id = %s::uuid filter"
+      note: weaviate and qdrant are config options but NOT yet implemented
+
+    document_parsers.py:
+      exports: auto_detect_and_parse(), chunk_text(), clean_text(), validate_file_size(), get_file_info()
+      constraint: All parsers accept bytes and return str — never touch disk
+
+    models.py:
+      exports:
+        core: [QueryRequest, QueryResponse, UploadResponse, StatusResponse]
+        faq: [FAQEntry, FAQCategoryData, FAQsResponse]
+        project: [ProjectCreate, ProjectResponse, ProjectListResponse]
+      v2_additions:
+        QueryRequest: "+ project_id: Optional[str], global_search: Optional[bool]"
+        QueryResponse: "+ source_type: Optional[str]  # 'faq' | 'rag'"
+        UploadResponse: "+ faqs_generated: Optional[int]"
+
+    llm.py:
+      exports: create_llm_client(), generate_answer()
+      note: >
+        generate_answer() takes llm_client as first explicit argument.
+        Ollama client is a plain dict {"type": "ollama", "base_url": "..."} — NOT an SDK object.
+        generate_answer() dispatches on LLM_CONFIG["provider"] directly.
+        httpx is used for Ollama HTTP calls.
+        Groq is documented in LLM_OPTIONS.md but NOT yet implemented here.
+
+    query_utils.py:
+      exports: normalize_query()
+      transforms:
+        - "3BHK → 3 BHK"
+        - "1200sqft → 1200 sq.ft."
+        - "1.5cr → 1.5 Crores"
+        - "50L → 50 Lakhs"
+        - "INR 50 / Rs.50 → Rs. 50"
+
+    faq_db.py:
+      exports:
+        - setup_faq_table         # Create table + indexes if not exists
+        - store_faqs              # Bulk insert document-generated FAQs (exact dedup by source_file)
+        - get_all_faqs            # Grouped by category; General = user_chat only
+        - search_faq              # ts_rank FTS lookup (threshold 0.15)
+        - delete_faqs_by_file     # Delete all FAQs from a source file (doc removal)
+        - upsert_chat_faq         # ILIKE dedup → UPDATE or INSERT for user_chat
+        - delete_faq_by_id        # Delete single FAQ by PK (scoped to project)
+        - delete_chat_faqs        # Delete all user_chat FAQs for a project (clear-all)
+      table: faq_entries
+      category_config: "7 fixed categories: Pricing, Amenities, Location, Process, Specifications, Security, General"
+      general_category_rule: >
+        get_all_faqs() filters General category to ONLY include source_file='user_chat' entries.
+        Document-generated FAQs categorized as 'General' by the LLM are excluded from the mind map.
+        All other categories (Pricing, Amenities, etc.) include all source files.
+      search_details:
+        engine: "PostgreSQL ts_rank full-text search with GIN index"
+        threshold: "rank > 0.15 (raised from 0.01 — phrase-level match required)"
+        returns: "{id, question, answer, category, source_file, rank} or None"
+      upsert_chat_faq_details:
+        match: "LOWER(question) = LOWER(%s) — case-insensitive exact match"
+        on_match: "UPDATE answer in-place (no duplicate row)"
+        on_miss: "INSERT new row with category='General', source_file='user_chat'"
+        returns: "'updated' | 'inserted' | 'skipped'"
+      store_faqs_details:
+        dedup: "Skips questions already existing for same source_file + project (exact match)"
+        returns: "int — number of FAQs actually inserted"
+
+    faq_generator.py:
+      exports: generate_faqs()
+      signature: "generate_faqs(text, llm_client, source_file, max_faqs=25) -> List[Dict]"
+      behaviour:
+        - Truncates text to 50,000 chars (MAX_TEXT_CHARS) to fit LLM context window
+        - Sends full text directly to LLM with structured prompt — bypasses RAG pipeline
+        - Parses JSON output (handles markdown code fences)
+        - Validates category against FIXED_CATEGORIES (defaults to "General" if invalid)
+        - Dispatches to correct LLM provider (Ollama/Gemini/OpenAI/Claude)
+      fixed_categories: [Pricing, Amenities, Location, Process, Specifications, Security, General]
+
+    project_manager.py:
+      exports: [create_project, list_projects, get_project, delete_project, get_or_create_default_project]
+      default_project:
+        vdb_namespace: default
+        created_by: "get_or_create_default_project() — called at app startup"
+        protection: "DELETE /projects/{id} returns HTTP 400 if project_id == default_project_id"
+      list_projects_note: >
+        Returns only user-created projects. Default Project (vdb_namespace='default') is excluded.
+      create_project_note: >
+        vdb_namespace is set to gen_random_uuid()::text (separate from project_id).
+        Project isolation uses WHERE project_id = %s::uuid on SQL queries.
+
+  scripts/:
+    migrate_multiproject.py:
+      purpose: One-time DB migration for existing installations
+      idempotent: true
+      run: "python scripts/migrate_multiproject.py"
+      note: "New installations skip this — _setup_database() + setup_faq_table() auto-create everything"
+    generate_project_docs.py:
+      purpose: Generates 10 real estate project folders with multi-format documents
+      output: real_estate_documents/ (10 folders, 44+ docs)
+      doc_types: [brochure PDF, price_list XLSX, amenities_guide PDF, faq DOCX, floor_plans PDF, payment_plan PDF, legal_rera PDF, possession_timeline XLSX]
+      project_01: "Sunrise Heights — 8 generated doc types (most comprehensive)"
+      projects_02_10: "4 generated doc types each"
+    simple_rag.py: End-to-end RAG demo using FAISS + Gemini (no API server needed)
+    inspect_db.py: Inspect vector DB contents and statistics
+    inspect_faiss.py: FAISS index-specific inspection
+    pinecone_rag.py: Pinecone integration example
+
+  directories:
+    vector_store/: FAISS index persistence (faiss.index + metadata.json)
+    real_estate_documents/: "10 project subfolders with PDF/DOCX/XLSX/TXT test files"
+    error_logs/: Manually written YAML error logs (not auto-generated by app)
+    session_logs/: Manually written YAML session logs (not auto-generated by app)
+    knowledge_base/: All documentation and architecture guides
+    YAML/: "Setup reference YAMLs: RAG_backend_v2.yml, RAG_frontend_v2.yml, RAG_project_structure.yml, PGVECTOR_SETUP_v2.yml"
+    issue-fix/: "Production issue tracker YAMLs (multi_project_production_issues.yml)"
+
+# ==============================================================================
+# DATABASE SCHEMA
+# ==============================================================================
+
+database_schema:
+  tables:
+    projects:
+      columns:
+        project_id:   "UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+        project_name: "VARCHAR(255) NOT NULL"
+        vdb_namespace: "VARCHAR(255) NOT NULL UNIQUE"
+        created_at:   "TIMESTAMP DEFAULT NOW()"
+        updated_at:   "TIMESTAMP DEFAULT NOW()"
+      notes:
+        - "Default Project has vdb_namespace = 'default' — cannot be deleted"
+        - "Created automatically by _setup_database() or migrate_multiproject.py"
+
+    rag_documents:
+      columns:
+        id:         "TEXT PRIMARY KEY  — format: doc_{counter}_{unix_ts}_{chunk_index}"
+        embedding:  "vector(1024)      — must match EMBEDDING_CONFIG.dimensions"
+        text:       "TEXT"
+        metadata:   "JSONB             — {filename, document_id, chunk_index, total_chunks, upload_time}"
+        created_at: "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        project_id: "UUID FK → projects(project_id) ON DELETE CASCADE"
+      indexes:
+        rag_documents_embedding_idx: "HNSW (vector_cosine_ops, m=16, ef_construction=64)"
+        idx_rag_documents_project_id: "btree on project_id"
+
+    faq_entries:
+      columns:
+        id:          "SERIAL PRIMARY KEY"
+        project_id:  "UUID REFERENCES projects(project_id) ON DELETE CASCADE"
+        question:    "TEXT NOT NULL"
+        answer:      "TEXT NOT NULL"
+        category:    "VARCHAR(100) NOT NULL DEFAULT 'General'"
+        source_file: "VARCHAR(255)  — filename for doc FAQs; 'user_chat' for AI chat saves"
+        created_at:  "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+      indexes:
+        idx_faq_category:   "btree on category"
+        idx_faq_project_id: "btree on project_id"
+        idx_faq_fts:        "GIN on to_tsvector('english', question)"
+      source_file_values:
+        document_faqs: "Original filename (e.g. 'brochure.pdf') — auto-generated on upload"
+        chat_faqs:     "'user_chat' — auto-saved from AI chat Q&A via upsert_chat_faq()"
+
+  relationships: |
+    projects (1) ──< (N) rag_documents   (ON DELETE CASCADE)
+    projects (1) ──< (N) faq_entries     (ON DELETE CASCADE)
+
+# ==============================================================================
+# CONFIGURATION (config.py)
+# ==============================================================================
+
+configuration:
+
+  embedding:
+    current_provider: fastembed
+    current_model: BAAI/bge-large-en-v1.5
+    current_dimensions: 1024
+    current_notes: "ONNX Runtime — no PyTorch, no GPU needed. ~50 MB download. Cached at ~/.cache/fastembed/"
+
+  vector_database:
+    current_provider: pgvector
+    providers:
+      pgvector:
+        type: PostgreSQL extension
+        table_name: rag_documents
+        similarity: 1 - cosine_distance
+        auto_creates_tables: true
+        tables_created: [projects, rag_documents, faq_entries]
+        requires: psycopg2-binary + PostgreSQL with vector extension + PGVECTOR_CONNECTION_STRING
+      faiss:
+        type: local in-memory (optional disk persist)
+        similarity: 1 / (1 + L2_distance)
+        notes: "project_id scoping NOT implemented — single-tenant only."
+
+  llm:
+    current_provider: gemini
+    current_model: gemini-2.5-flash
+    current_notes: "Cloud LLM. Requires GEMINI_API_KEY in .env. Confirmed working."
+    temperature: 0.7
+    max_tokens: 2048
+    providers:
+      gemini:
+        models: ["gemini-2.5-flash (confirmed working)", "gemini-2.5-flash-lite"]
+        requires: google-genai + GEMINI_API_KEY
+        status: Current default
+      ollama:
+        models: ["sam860/LFM2:1.2b (RAG-tuned, 1GB)", "mistral", "llama3.1"]
+        requires: Ollama running at http://localhost:11434
+        api_call: "httpx POST /api/generate (NOT an SDK object)"
+        client_type: "plain dict: {type: ollama, base_url: ...}"
+        cost: free
+
+  rag_pipeline:
+    chunk_size: 800
+    chunk_overlap: 200
+    top_k: 10
+    similarity_threshold: 0.15
+    faq_rank_threshold: 0.15
+    system_prompt_placeholders: ["{context}", "{query}"]
+
+  document:
+    supported_formats: [.pdf, .docx, .xlsx, .txt]
+    max_file_size_mb: 50
+    pdf_parser_options: [pypdf2, pdfplumber]
+    default_pdf_parser: pypdf2
+    excel_combine_sheets: true
+
+  api:
+    host: "0.0.0.0"
+    port: 8000
+    reload: true
+    cors_origins: ["*"]
+
+# ==============================================================================
+# API ENDPOINTS
+# ==============================================================================
+
+api_endpoints:
+
+  system:
+    - { method: GET,    path: /,       description: "API info and endpoint listing" }
+    - { method: GET,    path: /status, description: "System health (doc count, chunks, providers)" }
+    - { method: DELETE, path: /reset,  description: "Clear all vectors (optionally scoped to project_id)" }
+    - { method: POST,   path: /save,   description: "Save FAISS index to disk (no-op for pgvector)" }
+    - { method: POST,   path: /load,   description: "Load FAISS index from disk (no-op for pgvector)" }
+
+  projects:
+    - { method: POST,   path: /projects,             description: "Create project → returns project_id UUID" }
+    - { method: GET,    path: /projects,             description: "List all user projects (excludes Default Project)" }
+    - { method: GET,    path: /projects/{project_id}, description: "Get single project by UUID" }
+    - { method: DELETE, path: /projects/{project_id}, description: "Delete project + CASCADE all data. Default Project protected (400)." }
+
+  documents:
+    - method: POST
+      path: /upload
+      description: "Upload and process a document. Sequential multi-file: call once per file."
+      request: "multipart/form-data{file, project_id?}"
+      response_fields:
+        document_id: "doc_{counter}_{unix_timestamp}"
+        chunks_added: int
+        faqs_generated: int
+        processing_time_ms: float
+
+    - method: GET
+      path: /projects/{project_id}/documents
+      description: List all documents uploaded to a project
+
+    - method: DELETE
+      path: /projects/{project_id}/documents/{document_id}
+      description: "Delete document chunks + its upload-generated FAQs. user_chat FAQs are NOT deleted."
+
+  query:
+    - method: POST
+      path: /query
+      description: "FAQ-first (rank>0.15), then RAG fallback. Returns source_type."
+      request_fields:
+        question: string (required)
+        top_k: "int (optional, default 10)"
+        project_id: "UUID (optional)"
+        global_search: "bool — if true, search across all projects"
+      response_fields:
+        answer: string
+        sources: "List[{text, filename, chunk_index, similarity_score}]"
+        source_type: "'faq' | 'rag'"
+        processing_time_ms: float
+
+  faqs:
+    - method: GET
+      path: /faqs
+      description: "Get FAQs grouped by category. General = user_chat only."
+      query_params: "project_id (optional)"
+      response: "FAQsResponse{categories, total}"
+
+    - method: DELETE
+      path: /faqs/chat
+      description: "Clear ALL user_chat FAQs for a project (General category clear-all)"
+      query_params: "project_id (optional)"
+      response: "{deleted: int, message: str}"
+
+    - method: DELETE
+      path: /faqs/{faq_id}
+      description: "Delete a single FAQ entry by integer ID"
+      path_params: "faq_id: int"
+      query_params: "project_id (optional, safety scope)"
+      response: "{deleted: true, faq_id: int}"
+      errors:
+        404: FAQ not found
+
+# ==============================================================================
+# DATA MODELS (Pydantic — src/models.py)
+# ==============================================================================
+
+data_models:
+
+  QueryRequest:
+    question: "str — required"
+    top_k: "Optional[int] — default 10"
+    project_id: "Optional[str] — UUID"
+    global_search: "Optional[bool] — search all projects"
+
+  QueryResponse:
+    question: str
+    answer: str
+    sources: "List[Dict]"
+    processing_time_ms: float
+    source_type: "Optional[str] — 'faq' | 'rag'"
+
+  UploadResponse:
+    status: str
+    message: str
+    document_id: str
+    filename: str
+    file_info: "Dict"
+    chunks_added: int
+    total_chunks: int
+    processing_time_ms: float
+    faqs_generated: "Optional[int]"
+
+  FAQEntry:
+    id: int
+    question: str
+    answer: str
+    category: str
+    source_file: "Optional[str]"
+
+  FAQCategoryData:
+    name: str
+    color: str
+    icon: str
+    faqs: "List[FAQEntry]"
+
+  FAQsResponse:
+    categories: "List[FAQCategoryData]"
+    total: int
+
+  ProjectCreate:
+    project_name: str
+
+  ProjectResponse:
+    project_id: str
+    project_name: str
+    vdb_namespace: str
+    created_at: "Optional[str]"
+
+  ProjectListResponse:
+    projects: "List[ProjectResponse]"
+    total: int
+
+# ==============================================================================
+# ENVIRONMENT VARIABLES
+# ==============================================================================
+
+environment_variables:
+  required:
+    PGVECTOR_CONNECTION_STRING: "Format: postgresql://user:pass@host:port/dbname"
+    GEMINI_API_KEY: "Required when provider = gemini (current default)"
+
+  optional:
+    OPENAI_API_KEY: OpenAI embeddings or LLM
+    ANTHROPIC_API_KEY: Claude LLM
+    COHERE_API_KEY: Cohere embeddings
+    PINECONE_API_KEY: Pinecone vector DB
+    PINECONE_ENV: "Default: us-east-1"
+    API_KEY: "X-Api-Key header enforcement (leave unset for dev)"
+
+  security_notes:
+    - .env file must be in .gitignore
+    - Never commit API keys
+
+# ==============================================================================
+# DEVELOPMENT COMMANDS
+# ==============================================================================
+
+commands:
+  setup:
+    - "python -m venv venv && source venv/bin/activate"
+    - "pip install -r requirements_api.txt"
+
+  run:
+    development: "uvicorn app:app --reload"
+    direct: "python app.py"
+    production: "gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000"
+
+  migration:
+    first_time_existing_db: "python scripts/migrate_multiproject.py"
+    new_installation: "No migration needed — auto-created on first startup"
+
+  utilities:
+    - "python scripts/simple_rag.py              # E2E test without API server"
+    - "python scripts/inspect_db.py              # Inspect vector DB"
+    - "python scripts/generate_project_docs.py   # Generate 10 project doc folders"
+
+  port_management:
+    check: "lsof -i :8000"
+    kill_all: "lsof -t -i:8000 | xargs kill -9"
+
+  api_test_curl:
+    create_project: |
+      curl -X POST http://localhost:8000/projects \
+        -H "Content-Type: application/json" \
+        -d '{"project_name": "Sunrise Heights"}'
+    upload: |
+      curl -X POST http://localhost:8000/upload \
+        -F "file=@./doc.pdf" \
+        -F "project_id=<uuid>"
+    query: |
+      curl -s -X POST http://localhost:8000/query \
+        -H "Content-Type: application/json" \
+        -d '{"question": "What is the price?", "project_id": "<uuid>"}' | python3 -m json.tool
+    faqs: "curl http://localhost:8000/faqs?project_id=<uuid>"
+    delete_faq: "curl -X DELETE http://localhost:8000/faqs/42?project_id=<uuid>"
+    clear_chat_faqs: "curl -X DELETE http://localhost:8000/faqs/chat?project_id=<uuid>"
+
+# ==============================================================================
+# IMPORTANT CONSTRAINTS
+# ==============================================================================
+
+constraints:
+  embedding_dimensions: >
+    EMBEDDING_CONFIG["dimensions"] MUST match the vector DB's dimension parameter.
+    Mismatch causes runtime errors. If you change models, drop rag_documents and let it recreate.
+  in_memory_processing: >
+    All document parsers accept bytes and return str.
+    Never write uploaded files to disk.
+  similarity_scoring_varies_by_provider:
+    faiss: 1 / (1 + L2_distance)
+    pgvector: 1 - cosine_distance
+  global_state_init: >
+    All five globals (embedder, vector_db, llm_client, db_conn, default_project_id)
+    are initialised at module import time. Config changes require server restart.
+  faq_degradation: >
+    FAQ features silently degrade when db_conn is None (non-pgvector setup).
+    Upload succeeds; FAQ generation is non-fatal.
+  default_project_protection: >
+    DELETE /projects/{id} returns HTTP 400 if project_id matches default_project_id.
+  faqs_chat_endpoint_order: >
+    DELETE /faqs/chat must be registered BEFORE DELETE /faqs/{faq_id} in app.py,
+    OR faq_id must be typed as int (FastAPI won't match "chat" to int path param).
+  general_category_isolation: >
+    General category in get_all_faqs() is filtered to source_file='user_chat' only.
+    Document FAQs landing in General (via LLM mis-categorisation) are hidden from the mind map.
+
+# ==============================================================================
+# KNOWN ISSUES & SOLUTIONS
+# ==============================================================================
+
+known_issues:
+  - issue: "[Errno 98] Address already in use"
+    cause: Previous server instance on port 8000
+    fix: "kill -9 $(lsof -t -i:8000)"
+
+  - issue: "Gemini API timeout (ECONNABORTED)"
+    cause: "Long FAQ generation on large documents + slow network"
+    fix: "axios timeout raised to 60s; consider moving FAQ generation to BackgroundTasks"
+
+  - issue: "FAQ table setup failed at startup"
+    cause: "pgvector not configured or DB connection error"
+    fix: "Check PGVECTOR_CONNECTION_STRING in .env; check DB is running"
+    behaviour: "App continues with db_conn=None — FAQ features disabled silently"
+
+  - issue: "Global chat returns data from unexpected projects"
+    cause: "Old test documents uploaded to Default Project before multi-project setup"
+    fix: >
+      Run DB cleanup:
+      DELETE FROM rag_documents WHERE project_id = '<default_uuid>';
+      DELETE FROM faq_entries WHERE project_id = '<default_uuid>' AND source_file <> 'user_chat';
+
+  - issue: "embeddings.position_ids UNEXPECTED in BertModel LOAD REPORT"
+    cause: Known harmless warning from BAAI/bge-large-en-v1.5 model loading
+    fix: Safe to ignore
+
+# ==============================================================================
+# PRESET CONFIGURATIONS
+# ==============================================================================
+
+preset_configurations:
+  current_default:
+    embedding: "fastembed / BAAI/bge-large-en-v1.5 / 1024 dims"
+    vector_db: pgvector
+    llm: "gemini / gemini-2.5-flash"
+    monthly_cost: ~$2.50
+
+  free_local:
+    embedding: "fastembed / BAAI/bge-large-en-v1.5 / 1024 dims"
+    vector_db: pgvector
+    llm: "ollama / sam860/LFM2:1.2b"
+    monthly_cost: free
+    note: "Uncomment provider: ollama in config.py"

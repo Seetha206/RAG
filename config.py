@@ -14,8 +14,10 @@ load_dotenv()
 # To swap embedding providers, just change these 3 lines!
 
 EMBEDDING_CONFIG = {
-    # Options: "local", "openai", "cohere"
-    "provider": "local",
+    # Options: "fastembed", "local", "openai", "cohere"
+    # "fastembed" uses ONNX Runtime (no PyTorch, no GPU needed, ~50MB) ← current
+    # "local" uses sentence-transformers (requires torch, ~1.8GB)
+    "provider": "fastembed",
 
     # Model names by provider:
     # - local: "BAAI/bge-large-en-v1.5", "all-MiniLM-L6-v2", "all-mpnet-base-v2", "e5-large-v2"
@@ -97,16 +99,21 @@ VECTOR_DB_CONFIG = {
 # Configure which LLM to use for answer generation
 
 LLM_CONFIG = {
-    # Options: "gemini", "openai", "claude"
+    # Options: "gemini", "ollama", "openai", "claude"
+    # "ollama"  → local, no API key, requires: ollama serve + ollama pull <model>
+    #             See knowledge_base/OLLAMA_LFM2_GUIDE.md for full setup instructions
+    # "gemini"  → cloud, free tier, requires GEMINI_API_KEY in .env
     "provider": "gemini",
-
     # Model names by provider:
-    # - gemini: "gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-pro"
-    # - openai: "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"
-    # - claude: "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"
-    "model": "models/gemini-3-flash-preview",  # Latest Gemini model! (experimental, free tier)
+    # - gemini:  "gemini-2.5-flash" ← confirmed working, "gemini-2.5-flash-lite"
+    # - ollama:  "sam860/LFM2:1.2b" (RAG-tuned, 1GB), "mistral", "llama3.1"
+    # - openai:  "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"
+    # - claude:  "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"
+    "model": "gemini-2.5-flash",  # Confirmed working
+    # Ollama settings (only used when provider = "ollama")
+    "ollama_base_url": "http://localhost:11434",
 
-    # API keys
+    # API keys (only used for cloud providers)
     "gemini_api_key": os.getenv("GEMINI_API_KEY"),
     "openai_api_key": os.getenv("OPENAI_API_KEY"),
     "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY"),
@@ -139,9 +146,13 @@ RAG_CONFIG = {
 4. If two sources give different data for the same thing, present both and note the difference.
 5. Use markdown: **bold** for property names, bullet points for lists, and tables when comparing across properties.
 6. Be specific — include exact prices, areas (sq.ft.), unit counts, and other numbers as stated in the context.
-7. Prioritize chunks with higher relevance scores — they are more likely to contain the answer.
+7. Chunks are ordered by relevance — earlier chunks are more likely to have the direct answer,
+   but read all of them before responding.
 8. Keep answers concise but complete. Do not repeat the same information twice.
-9. If the answer truly cannot be found anywhere in the context, say: "I couldn't find that information in the uploaded documents. Try rephrasing your question or uploading relevant documents."
+9. Always try to give a useful answer from the context. If the exact detail is not stated, share
+   what IS available that is related, then note what is missing. Only say "I couldn't find that
+   information in the uploaded documents" if the context has absolutely nothing relevant to the
+   question — not just because the match is imperfect.
 
 Context:
 {context}
@@ -177,7 +188,11 @@ API_CONFIG = {
     "host": "0.0.0.0",
     "port": 8000,
     "reload": True,  # Auto-reload on code changes (development only)
-    "cors_origins": ["*"],  # Allow all origins (adjust for production)
+    # Set CORS_ORIGINS in .env for production: "https://sellbot-ai.vercel.app"
+    "cors_origins": os.getenv("CORS_ORIGINS", "*").split(","),
+    # Set API_KEY in .env to enforce X-API-Key header on all endpoints.
+    # Leave unset (None) to run without auth (development only).
+    "api_key": os.getenv("API_KEY"),
 }
 
 # =============================================================================

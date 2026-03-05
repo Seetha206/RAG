@@ -1,6 +1,6 @@
 # Session Logs - Seetha
 # Project: SellBot RAG System
-# Last Updated: 2026-02-20
+# Last Updated: 2026-03-01
 
 sessions:
 
@@ -461,3 +461,492 @@ sessions:
       - "Replace leaked GEMINI_API_KEY in .env with new key from aistudio.google.com/apikey"
       - "Run semantic questions to verify RAG quality after all fixes"
       - "Test with new v2 system prompt for answer quality"
+
+  - session_id: SESSION_004
+    date: "2026-02-25"
+    duration: "~3 hours"
+    summary: "CLAUDE.md improvements, venv cleanup (8.5GB → ~0.5GB), switched to fastembed, fixed Gemini timeouts, added Ollama/LFM2 LLM support"
+
+    activities:
+
+      - order: 1
+        timestamp: "2026-02-25T20:00:00"
+        action: "CLAUDE.md accuracy improvements via /init"
+        description: |
+          Explored codebase and made 6 targeted improvements to CLAUDE.md:
+          1. Added RAG/ dev server port 3000 (confirmed from vite.config.ts)
+          2. Added VITE_API_BASE_URL=http://localhost:8000 (confirmed from .env.development)
+          3. Added Tailwind v3 specificity (not v4)
+          4. Added all 13 Vite path aliases with note to never use relative imports
+          5. Fixed /save and /load — clarified they are FAISS-only (others auto-persist)
+          6. Added missing npm scripts: preview, format:check
+          7. Condensed Documentation section from 20+ files to 6 key refs + one-liner
+          8. Added static_variable.ts as single source of truth for env config
+        files_changed:
+          - CLAUDE.md
+
+      - order: 2
+        timestamp: "2026-02-25T20:30:00"
+        action: "venv size analysis and GPU package removal"
+        description: |
+          User identified 8.5 GB venv. Measured per-package sizes:
+          - nvidia/*: 4.3 GB (CUDA libs, pulled by torch, zero GPU in machine)
+          - torch:    1.8 GB (GPU build, wasted — no nvidia-smi found)
+          - triton:   641 MB (GPU kernel compiler, unused)
+          - cuda:     107 MB (CUDA bindings, unused)
+          Confirmed no GPU: nvidia-smi → NO_GPU
+          Actions taken:
+          1. pip uninstall nvidia-* cuda-bindings cuda-pathfinder torch triton
+          2. Python shutil.rmtree on orphaned dirs (pip left binaries behind)
+          3. Replaced GPU torch with CPU-only torch (pip install torch --index-url whl/cpu)
+          4. Then fully removed torch after switching embedding provider
+          Disk freed: ~8 GB (nvidia, triton, cuda, torch, transformers, scipy, sklearn, sympy, networkx)
+        outcome: "venv reduced from ~8.5 GB to ~0.5 GB"
+
+      - order: 3
+        timestamp: "2026-02-25T21:00:00"
+        action: "Switched embedding provider: sentence-transformers → fastembed"
+        description: |
+          Discussion: sentence-transformers requires torch (1.8 GB). Explored alternatives:
+          - fastembed (Apache 2.0): ONNX Runtime, same BAAI/bge-large-en-v1.5 model, ~50 MB
+          - infinity-emb (MIT): also ONNX-based, MIT licensed
+          - Ollama nomic-embed-text: requires daemon, dimension change (768 vs 1024)
+          Decision: fastembed — same model, same 1024 dims, same quality, no torch.
+          Implementation:
+          1. Added FastEmbedEmbeddings class to src/embeddings.py
+          2. Registered "fastembed" in get_embedding_provider() factory
+          3. Changed config.py provider: "local" → "fastembed"
+          4. Updated requirements_api.txt
+          5. pip uninstall sentence-transformers torch; pip install fastembed
+          6. Removed orphaned dirs: torch/, transformers/, scipy/, sklearn/, sympy/, networkx/
+          Model cached to: ~/.cache/fastembed/BAAI_bge-large-en-v1.5/ (~1.3 GB, one-time)
+          Verified: embedding shape (1, 1024), embed time 0.05s per query
+        files_changed:
+          - src/embeddings.py (added FastEmbedEmbeddings class + factory entry)
+          - config.py (provider "local" → "fastembed")
+          - requirements_api.txt (sentence-transformers → fastembed)
+
+      - order: 4
+        timestamp: "2026-02-25T21:30:00"
+        action: "Created knowledge_base/LLM_OPTIONS.md"
+        description: |
+          Documented all LLM alternatives to Gemini with comparison tables:
+          - Free cloud: Gemini 2.5 Flash, Groq + Llama3.1-8B/Mixtral, GPT-4o-mini
+          - Local via Ollama: Mistral 7B (Apache 2.0), Llama 3.1 8B, Phi-3.5 Mini (MIT),
+            Qwen2.5 7B (Apache 2.0), LFM2-1.2B-RAG (RAG-tuned, tiny)
+          Decision guide: by priority (privacy, cost, quality, RAM)
+          How-to-switch section: which files to change.
+        files_created:
+          - knowledge_base/LLM_OPTIONS.md
+
+      - order: 5
+        timestamp: "2026-02-25T22:00:00"
+        action: "Fixed Gemini timeout and slow response errors"
+        description: |
+          Symptoms: "Your request is taking longer than usual" + "Sorry, I ran into an issue"
+          Root cause 1: axios query timeout was 30s (axiosConfig.ts default), but Gemini
+            experimental model (gemini-3-flash-preview) could take > 30s → ECONNABORTED
+          Root cause 2: gemini-2.0-flash had quota limit=0 on this API key → 429 error → 500
+          Diagnosis: Tested all models with client.models.generate_content():
+            - gemini-1.5-flash/8b: 404 deprecated
+            - gemini-2.0-flash: 429 quota=0
+            - gemini-2.5-flash: OK ✓
+            - gemini-2.5-flash-lite: OK ✓
+          Fixes applied:
+          1. config.py: model "gemini-3-flash-preview" → "gemini-2.5-flash"
+          2. ragService.ts: postQuery switched from apiClient (no timeout arg) to
+             axiosInstance.post with { timeout: 60000 } (60s vs 30s default)
+        files_changed:
+          - config.py (LLM model updated)
+          - RAG/src/services/api/ragService.ts (query timeout 30s → 60s)
+        error_ref: "ERR_013"
+
+      - order: 6
+        timestamp: "2026-02-25T22:30:00"
+        action: "Added Ollama LLM provider + LFM2-1.2B-RAG for testing"
+        description: |
+          User wants to test LFM2-1.2B-RAG (Liquid AI, 1 GB, RAG-tuned) locally via Ollama.
+          Changes:
+          1. Added "ollama" provider to src/llm.py:
+             - create_llm_client(): returns config dict (no external client needed)
+             - generate_answer(): calls Ollama HTTP API (POST /api/generate, stream: false)
+             - Uses httpx (already installed) for HTTP call
+          2. Added ollama config to config.py LLM_CONFIG:
+             - provider: "ollama"
+             - model: "liquid/lfm2:1.2b"
+             - ollama_base_url: "http://localhost:11434"
+          Gemini kept intact — switching back is one line: provider → "gemini"
+          Prerequisites for user:
+            curl -fsSL https://ollama.com/install.sh | sh
+            ollama pull liquid/lfm2:1.2b
+            ollama serve  (in separate terminal)
+        files_changed:
+          - src/llm.py (added ollama provider)
+          - config.py (provider "gemini" → "ollama", added ollama_base_url)
+
+    current_state:
+      backend:
+        status: "running"
+        embedding_provider: "fastembed (ONNX, Apache 2.0)"
+        embedding_model: "BAAI/bge-large-en-v1.5 (1024 dims, cached ~/.cache/fastembed/)"
+        vector_db: "pgvector with HNSW index"
+        llm_provider: "ollama (testing)"
+        llm_model: "liquid/lfm2:1.2b (LFM2-1.2B-RAG)"
+        llm_fallback: "gemini-2.5-flash (change provider back in config.py)"
+        similarity_threshold: 0.15
+        top_k: 10
+        query_normalization: "enabled"
+      frontend:
+        query_timeout: "60s (was 30s)"
+      venv:
+        size_before: "~8.5 GB"
+        size_after: "~0.5 GB"
+        removed: "nvidia, torch (GPU), triton, cuda, sentence-transformers, transformers, scipy, sklearn, sympy, networkx"
+        added: "fastembed, onnxruntime"
+
+    pending_tasks:
+      - "Install Ollama + pull liquid/lfm2:1.2b and test LFM2 locally"
+      - "Compare LFM2 answer quality vs Gemini 2.5 Flash on real estate queries"
+      - "Revert to gemini-2.5-flash when done testing (config.py provider line)"
+
+  - session_id: SESSION_002
+    date: "2026-03-01"
+    duration: "~2 hours"
+    summary: "Transformed RAG frontend to FAQ Mind Map UI + built full backend FAQ pipeline"
+
+    activities:
+
+      - order: 1
+        timestamp: "2026-03-01T17:00:00"
+        action: "Kimi UI exploration"
+        description: |
+          Analyzed the Kimi_Agent_Interactive FAQ Mind Map UI/ prototype folder.
+          Found a fully-built React + TypeScript + Vite app with SVG mind map,
+          project selector, AI chat panel (mocked), framer-motion animations,
+          shadcn/ui components. Decided to use it as the design reference for
+          transforming the RAG React frontend.
+        outcome: "Design reference confirmed"
+
+      - order: 2
+        timestamp: "2026-03-01T17:20:00"
+        action: "Backend FAQ pipeline"
+        description: |
+          Created two new Python modules:
+          - src/faq_db.py: PostgreSQL CRUD for faq_entries table
+            (setup_faq_table, store_faqs, get_all_faqs, search_faq, delete_faqs_by_file)
+          - src/faq_generator.py: LLM-direct FAQ extraction (not RAG)
+            (generate_faqs with FIXED_CATEGORIES: Pricing, Amenities, Location,
+            Process, Specifications, Security, General)
+          Updated src/models.py: FAQEntry, FAQCategoryData, FAQsResponse,
+          QueryResponse.source_type, UploadResponse.faqs_generated.
+          Updated app.py: startup FAQ table setup, /upload triggers FAQ gen,
+          GET /faqs endpoint, /query FAQ-first flow.
+        files_changed:
+          - src/faq_db.py
+          - src/faq_generator.py
+          - src/models.py
+          - app.py
+        outcome: "FAQ pipeline complete — upload → extract FAQs → store → serve"
+
+      - order: 3
+        timestamp: "2026-03-01T18:00:00"
+        action: "Frontend FAQ Mind Map transformation"
+        description: |
+          Replaced sidebar+chat layout with interactive SVG mind map:
+          - RAG/src/types/faq.types.ts (FAQEntry, FAQCategoryData, FAQsResponse)
+          - RAG/src/store/slices/faqSlice.ts (Redux FAQ slice, persisted)
+          - RAG/src/services/api/faqService.ts (GET /faqs)
+          - RAG/src/components/mindmap/MindMapView.tsx (SVG tree, search, upload, AI chat)
+          - RAG/src/components/mindmap/FAQAnswerModal.tsx (animated answer modal)
+          - RAG/src/App.tsx updated to use MindMapView
+          - RAG/src/store/index.ts, urls.ts, rag.types.ts updated
+          Added framer-motion dependency.
+        files_changed:
+          - RAG/src/types/faq.types.ts
+          - RAG/src/store/slices/faqSlice.ts
+          - RAG/src/store/index.ts
+          - RAG/src/services/api/faqService.ts
+          - RAG/src/services/api/urls.ts
+          - RAG/src/types/rag.types.ts
+          - RAG/src/components/mindmap/MindMapView.tsx
+          - RAG/src/components/mindmap/FAQAnswerModal.tsx
+          - RAG/src/App.tsx
+        outcome: "Mind map UI rendering — blank page issue appeared"
+
+      - order: 4
+        timestamp: "2026-03-01T18:30:00"
+        action: "Bug fix — blank page (3 root causes)"
+        description: |
+          Fixed 3 bugs that caused the white blank page:
+          1. Circular import: faqSlice.ts imported RootState from @store/index,
+             which imports faqSlice → Vite runtime init failure. Fix: replaced
+             RootState with local StateWithFAQ = { faq: FAQState }.
+          2. PayloadAction import: Vite ESM rejects importing a type as a value.
+             Fix: import type { PayloadAction } from '@reduxjs/toolkit'.
+          3. @types/faq.types alias: TypeScript TS6137 fires because @types/*
+             is reserved for DefinitelyTyped. Fix: relative import path used.
+          Also fixed rag.types.ts missing source_type and faqs_generated fields.
+          Cleared Vite cache (node_modules/.vite/).
+        files_changed:
+          - RAG/src/store/slices/faqSlice.ts
+          - RAG/src/types/rag.types.ts
+        outcome: "TypeScript type-check passes with zero errors"
+
+  - session_id: SESSION_003
+    date: "2026-03-01"
+    duration: "~1 hour"
+    summary: "Multi-project architecture — all 5 phases implemented"
+
+    activities:
+
+      - order: 1
+        timestamp: "2026-03-01T19:00:00"
+        action: "Phase 1 — DB schema migration script"
+        description: |
+          Created scripts/migrate_multiproject.py — idempotent migration:
+          1. Creates projects table (UUID PK, vdb_namespace UNIQUE)
+          2. Inserts Default Project
+          3. Adds project_id UUID FK to rag_documents + assigns existing rows
+          4. Adds project_id UUID FK to faq_entries + assigns existing rows
+          5. Creates all indexes
+        files_changed:
+          - scripts/migrate_multiproject.py
+        outcome: "Migration script ready — run once before restarting backend"
+
+      - order: 2
+        timestamp: "2026-03-01T19:15:00"
+        action: "Phase 2 — Project management API"
+        description: |
+          Created src/project_manager.py with 5 functions:
+          create_project, list_projects, get_project, delete_project,
+          get_or_create_default_project.
+          Added 4 REST endpoints to app.py:
+          POST /projects, GET /projects, GET /projects/{id}, DELETE /projects/{id}.
+          Added ProjectCreate, ProjectResponse, ProjectListResponse to models.py.
+          DELETE is blocked on Default Project (HTTP 400 guard).
+        files_changed:
+          - src/project_manager.py
+          - src/models.py
+          - app.py
+        outcome: "Full project CRUD API available"
+
+      - order: 3
+        timestamp: "2026-03-01T19:30:00"
+        action: "Phases 3+4+5 — multi-tenant upload/query/FAQs"
+        description: |
+          Updated PgVectorDatabase in vector_databases.py:
+          - _setup_database() now creates projects table + project_id column in rag_documents
+          - add() accepts project_id param → stores with UUID FK
+          - search() accepts project_id param → filters by WHERE project_id = ?
+          Updated faq_db.py all functions to accept project_id param.
+          Updated app.py:
+          - POST /upload accepts project_id form field
+          - POST /query uses project_id from QueryRequest body
+          - GET /faqs uses project_id query param
+          All default to default_project_id (UUID of Default Project, set at startup).
+          Added QueryRequest.project_id field to models.py.
+        files_changed:
+          - src/vector_databases.py
+          - src/faq_db.py
+          - src/models.py
+          - app.py
+        outcome: "All 5 phases complete — full multi-project, multi-tenant system"
+
+      - order: 4
+        timestamp: "2026-03-01T20:00:00"
+        action: "Documentation"
+        description: |
+          Created knowledge_base/FAQ_MINDMAP_MULTIPROJECT_IMPLEMENTATION.md:
+          - Full implementation reference for both frontend and backend
+          - DB schema diagrams, API endpoint table, file change summary
+          - Bug fixes log, architecture decision log
+          Updated knowledge_base/MULTI_PROJECT_RAG_PLAN.md status to all phases complete.
+          Updated session_seetha_logs.yml with SESSION_002 and SESSION_003.
+        files_changed:
+          - knowledge_base/FAQ_MINDMAP_MULTIPROJECT_IMPLEMENTATION.md
+          - knowledge_base/MULTI_PROJECT_RAG_PLAN.md
+          - session_logs/session_seetha_logs.yml
+        outcome: "Full documentation complete"
+
+    pending_tasks:
+      - "Run migration script: python scripts/migrate_multiproject.py"
+      - "Restart backend and verify /projects, /faqs, /upload, /query all work"
+      - "Upload a real estate PDF and verify mind map tree populates"
+      - "Test project isolation: upload to project A, query project B returns no results"
+      - "Frontend: add project selector to MindMapView toolbar (Phase 2 UI)"
+
+  - session_id: SESSION_005
+    date: "2026-03-04"
+    duration: "~3 hours"
+    summary: "Backend production hardening (async wrappers, project filter, UUID cast) + dark theme redesign with Midnight Rose palette"
+
+    activities:
+
+      - order: 1
+        timestamp: "2026-03-04T10:00:00"
+        action: "Backend audit — 17 production issues identified and fixed"
+        description: |
+          Full audit of app.py and backend modules against the new dashboard architecture.
+          Issues found and resolved:
+          1. Project CRUD endpoints (POST/GET/DELETE /projects) were calling synchronous
+             psycopg2 directly on the FastAPI async event loop → blocking I/O.
+             Fix: wrapped all calls in asyncio.run_in_executor(None, lambda: ...).
+          2. GET /faqs was also blocking. Fix: same run_in_executor pattern.
+          3. list_projects() returned ALL projects including the system "Default Project",
+             causing it to appear as a user-facing card. Fix: added
+             WHERE vdb_namespace != 'default' filter in project_manager.py.
+          4. get_all_faqs() in faq_db.py used WHERE project_id = %s without ::uuid cast
+             → type mismatch when project_id is a UUID string. Fix: added explicit cast.
+        files_changed:
+          - app.py (run_in_executor for all project CRUD + GET /faqs)
+          - src/project_manager.py (WHERE vdb_namespace != 'default' in list_projects)
+          - src/faq_db.py (WHERE project_id = %s::uuid in get_all_faqs)
+        error_ref: "ERR_014"
+
+      - order: 2
+        timestamp: "2026-03-04T12:00:00"
+        action: "Dark theme redesign — Midnight Rose colour palette"
+        description: |
+          Replaced light theme (#f5f7f8 / blue-primary) with a dark Midnight Rose palette:
+          - Primary: #fb7185 (Midnight Rose / rose-400)
+          - Secondary: #94a3b8 (Soft Slate / slate-400)
+          - Dark background: #1e293b (Warm Charcoal / slate-800)
+          - Darkest: #0f172a (slate-900)
+          Updated tailwind.config.js with brand.* token extensions.
+          Added .glass-card utility: rgba(255,255,255,0.03) + backdrop-blur(12px).
+          Added .gradient-cursor: fixed 600×600px radial-gradient div tracking mousemove.
+          Updated all existing components (MindMapView, FAQAnswerModal, App) to use
+          brand.* tokens and glass-card classes.
+          Fixed pre-existing TypeScript errors uncovered during the rewrite:
+          - TS6137: @types/faq.types alias → relative import in faqSlice.ts
+          - Circular RootState import in faqSlice → local StateWithFAQ type
+          - PayloadAction: import type (verbatimModuleSyntax requirement)
+        files_changed:
+          - RAG/tailwind.config.js (brand.* colour tokens)
+          - RAG/src/index.css (dark globals, .glass-card, .gradient-cursor, scrollbar)
+          - RAG/index.html (gradient-cursor div, font meta)
+          - RAG/src/App.tsx (dark header, brand colours)
+          - RAG/src/components/mindmap/MindMapView.tsx (root node fill, dark UI)
+          - RAG/src/components/mindmap/FAQAnswerModal.tsx (dark modal)
+          - RAG/src/store/slices/faqSlice.ts (relative import, local type fix)
+
+      - order: 3
+        timestamp: "2026-03-04T13:00:00"
+        action: "Completed colour palette — remaining indigo references"
+        description: |
+          Grepped for old indigo palette (6366f1, a855f7, 818cf8, indigo, purple).
+          Found two remaining files:
+          1. RAG/src/index.css: cursor gradient and scrollbar hover still used
+             rgba(99, 102, 241, ...). Updated to rgba(251, 113, 133, ...).
+          2. RAG/src/components/mindmap/MindMapView.tsx: SVG root node had
+             fill="#6366f1". Updated to fill="#fb7185".
+          Verified zero remaining old palette values after changes.
+        files_changed:
+          - RAG/src/index.css (cursor gradient + scrollbar hover → Midnight Rose)
+          - RAG/src/components/mindmap/MindMapView.tsx (root node fill #6366f1 → #fb7185)
+
+      - order: 4
+        timestamp: "2026-03-04T14:00:00"
+        action: "Documentation — knowledge_base FAQ_MINDMAP_MULTIPROJECT_IMPLEMENTATION.md"
+        description: |
+          Appended Part 4 (Backend Production Hardening) and Part 5 (Dark Theme Redesign
+          + Dashboard Navigation) to the implementation doc.
+          Also updated the File Change Summary table at the top.
+        files_changed:
+          - knowledge_base/FAQ_MINDMAP_MULTIPROJECT_IMPLEMENTATION.md
+
+    current_state:
+      backend:
+        status: "production-hardened — all endpoints properly async"
+        project_list: "excludes Default Project"
+        faq_db: "UUID cast fixed in get_all_faqs"
+      frontend:
+        theme: "dark — Midnight Rose (#fb7185) / Soft Slate (#94a3b8) / Warm Charcoal (#1e293b)"
+        ui_layer: "glass-card + gradient-cursor"
+        typescript: "zero errors on tsc --noEmit"
+
+  - session_id: SESSION_006
+    date: "2026-03-04"
+    duration: "~2 hours"
+    summary: "Dashboard page + React Router navigation; fixed stale FAQ data from redux-persist"
+
+    activities:
+
+      - order: 1
+        timestamp: "2026-03-04T15:00:00"
+        action: "Fixed stale FAQ data showing on frontend-only run"
+        description: |
+          User reported: mind map showed old FAQ nodes even when backend was offline
+          and npm run dev was the only process running.
+          Root cause: 'faq' slice was included in redux-persist whitelist, so the
+          last session's FAQ data was restored from localStorage on every page load.
+          Fix: removed 'faq' from the whitelist in src/store/index.ts.
+          FAQ state now always starts empty; data is fetched from backend on demand.
+        files_changed:
+          - RAG/src/store/index.ts (whitelist: removed 'faq')
+        error_ref: "ERR_015"
+
+      - order: 2
+        timestamp: "2026-03-04T15:20:00"
+        action: "Added BrowserRouter and route names"
+        description: |
+          Added BrowserRouter from react-router-dom wrapping <App /> in main.tsx.
+          Created/updated RAG/src/routes/routeNames.ts with two routes:
+          - DASHBOARD: '/'
+          - PROJECT_MINDMAP: (projectId: string) => `/projects/${projectId}`
+        files_changed:
+          - RAG/src/main.tsx (BrowserRouter wrapper)
+          - RAG/src/routes/routeNames.ts (DASHBOARD + PROJECT_MINDMAP routes)
+
+      - order: 3
+        timestamp: "2026-03-04T15:40:00"
+        action: "Created DashboardPage with project cards grid"
+        description: |
+          Created RAG/src/pages/DashboardPage.tsx — full project management UI:
+          - Cycling accent colours (CARD_COLORS array of 7 brand colours)
+          - States: loading spinner, error + retry, empty state with CTA, project grid
+          - Project card: colour accent top bar, FolderOpen icon, project name,
+            vdb_namespace, formatted created_at date, "Open →" link
+          - Dashed "+ New Project" card at end of grid
+          - New Project modal: input, create via projectService, navigate to mind map
+          - formatDate() using Intl.DateTimeFormat
+          - framer-motion animations: stagger entry, whileHover y:-4 lift, spring modal
+        files_created:
+          - RAG/src/pages/DashboardPage.tsx
+
+      - order: 4
+        timestamp: "2026-03-04T16:00:00"
+        action: "Wired routing in App.tsx + refactored MindMapView to accept props"
+        description: |
+          Updated RAG/src/App.tsx:
+          - Added Routes/Route structure: / → DashboardPage, /projects/:projectId → MindMapRoute
+          - MindMapRoute inner component reads :projectId via useParams, passes to MindMapView
+          - Catch-all * → DashboardPage
+          - Header: "AI Assistant" → "Knowledge Base", removed Settings icon
+
+          Refactored RAG/src/components/mindmap/MindMapView.tsx:
+          - Old: self-managed project list + project selector dropdown
+          - New: accepts { projectId: string; onBack: () => void } props
+          - Removed: loadProjects, project selector dropdown, New Project modal JSX
+          - Added: "← Projects" back button (ArrowLeft icon from lucide-react)
+          - loadFAQs now uses projectId prop
+          - useEffect on [projectId]: immediately dispatches setFAQs({ categories: [], total: 0 })
+            then calls loadFAQs() — prevents old project's FAQs flashing on switch
+          - handleUpload and handleSend use projectId prop directly
+          Ran tsc --noEmit: zero errors.
+        files_changed:
+          - RAG/src/App.tsx (Routes, MindMapRoute, header update)
+          - RAG/src/components/mindmap/MindMapView.tsx (props interface, removed self-management)
+
+    current_state:
+      frontend:
+        routing: "BrowserRouter — / = Dashboard, /projects/:id = MindMap"
+        dashboard: "project cards with animations, New Project modal, empty + error states"
+        mindmap: "accepts projectId prop, ← Projects back button, clears FAQ on project switch"
+        stale_data: "fixed — faq slice removed from redux-persist whitelist"
+      backend:
+        no_changes: "all changes from SESSION_005 apply"
+
+    pending_tasks:
+      - "End-to-end test: create project → upload PDF → FAQ nodes in mind map → back to dashboard"
+      - "Test project isolation: query project A, project B returns separate results"

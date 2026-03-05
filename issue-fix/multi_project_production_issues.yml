@@ -1,0 +1,1073 @@
+# =============================================================================
+# Multi-Project Architecture — Production Issues & Fix Plan
+# Generated: 2026-03-03
+# Scope: Scalability, Security, Structural correctness
+# =============================================================================
+# Severity levels:
+#   P0 — Critical: will crash or corrupt data under real usage
+#   P1 — High: incorrect behaviour, data leaks, or hard failures
+#   P2 — Medium: quality, performance, or usability degradation
+# =============================================================================
+
+issues:
+
+  # ---------------------------------------------------------------------------
+  # P0 — CRITICAL
+  # ---------------------------------------------------------------------------
+
+  - id: ISSUE_001
+    severity: P0
+    category: Scalability
+    title: "Single shared psycopg2 connection — not thread-safe"
+    files_affected:
+      - src/vector_databases.py       # line 522: self.conn = psycopg2.connect(...)
+      - app.py                        # line 87:  db_conn = vector_db.conn
+    description: |
+      One psycopg2 connection is created at startup and shared across every
+      concurrent HTTP request. psycopg2 connections are NOT safe for
+      concurrent use. Under any real load (gunicorn -w 4, parallel uploads
+      or queries) this produces cursor conflicts, "cursor already in use"
+      errors, and silent data corruption.
+    impact: |
+      Data corruption or crashes under concurrent load.
+      Gunicorn multi-worker mode will each start with their own connection
+      but within a single worker concurrent async requests share one connection.
+    fix:
+      approach: "Replace single connection with ThreadedConnectionPool"
+      steps:
+        - "In PgVectorDatabase.__init__, replace psycopg2.connect() with
+           psycopg2.pool.ThreadedConnectionPool(minconn=2, maxconn=10, dsn=connection_string)"
+        - "Wrap every DB operation with: conn = self.pool.getconn() / finally: self.pool.putconn(conn)"
+        - "Pass pool reference to faq_db and project_manager functions instead of a raw conn"
+        - "Long-term alternative: switch to asyncpg + asyncpg.create_pool() for true async"
+      code_sketch: |
+        from psycopg2 import pool
+        self.pool = pool.ThreadedConnectionPool(2, 10, connection_string)
+
+        # In every method:
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(...)
+        finally:
+            self.pool.putconn(conn)
+
+  - id: ISSUE_002
+    severity: P0
+    category: Security
+    title: "No authentication on any API endpoint"
+    files_affected:
+      - app.py                        # all route handlers
+      - config.py                     # API_CONFIG — no auth key
+    description: |
+      Every endpoint is completely open. No API key header, no bearer token,
+      no OAuth. Anyone with the Railway URL can:
+        - List and delete any project (DELETE /projects/{id})
+        - Wipe the entire vector DB (DELETE /reset)
+        - Upload documents and exhaust the Gemini API quota
+        - Read all FAQs from every project (GET /faqs)
+    impact: |
+      Full data exposure and destruction from any public caller.
+      Gemini API quota can be exhausted by uploading large files repeatedly.
+    fix:
+      approach: "Add static API key middleware in app.py"
+      steps:
+        - "Add API_KEY to .env: API_KEY=<strong-random-string>"
+        - "Read it in config.py: 'api_key': os.getenv('API_KEY')"
+        - "Add a FastAPI middleware that checks X-API-Key header on every non-root request"
+        - "Return HTTP 401 if header is missing or wrong"
+        - "Exempt GET / (root info) from auth check"
+        - "Long-term: replace with JWT + per-project API keys for true multi-tenancy"
+      code_sketch: |
+        from fastapi import Request
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        class APIKeyMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                if request.url.path == "/":
+                    return await call_next(request)
+                key = request.headers.get("X-API-Key")
+                if key != API_CONFIG["api_key"]:
+                    return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+                return await call_next(request)
+
+        app.add_middleware(APIKeyMiddleware)
+
+  - id: ISSUE_003
+    severity: P0
+    category: Security + Structural
+    title: "DELETE /reset is unprotected, global, and leaves FAQs behind"
+    files_affected:
+      - app.py                        # line 476: reset_database()
+      - src/vector_databases.py       # line 674: PgVectorDatabase.reset() — only deletes rag_documents
+    description: |
+      Two problems in one endpoint:
+      1. No authentication guard (covered by ISSUE_002, but specifically dangerous here)
+      2. reset() only executes DELETE FROM rag_documents — faq_entries are NOT cleared.
+         After a reset, GET /faqs still returns all old FAQs → inconsistent system state.
+    impact: |
+      POST /reset → rag_documents empty → GET /faqs still returns hundreds of stale FAQs.
+      The mind map shows FAQs that have no backing documents to answer follow-up questions.
+    fix:
+      approach: "Fix reset() to also clear FAQs, and add project-scoped reset option"
+      steps:
+        - "In PgVectorDatabase.reset(), add DELETE FROM faq_entries after rag_documents"
+        - "Add optional project_id parameter: reset only one project's data if supplied"
+        - "Update DELETE /reset endpoint to accept optional ?project_id= query param"
+        - "After auth middleware (ISSUE_002 fix), require admin-level key for global reset"
+      code_sketch: |
+        # In PgVectorDatabase.reset():
+        def reset(self, project_id: str = None) -> None:
+            with self.conn.cursor() as cur:
+                if project_id:
+                    cur.execute("DELETE FROM rag_documents WHERE project_id = %s::uuid", (project_id,))
+                    cur.execute("DELETE FROM faq_entries WHERE project_id = %s::uuid", (project_id,))
+                else:
+                    cur.execute("DELETE FROM rag_documents")
+                    cur.execute("DELETE FROM faq_entries")
+
+  - id: ISSUE_004
+    severity: P0
+    category: Scalability
+    title: "Blocking synchronous calls inside async FastAPI endpoints"
+    files_affected:
+      - app.py                        # line 255: embedder.embed(chunks)
+      - app.py                        # line 379: embedder.embed(normalized_question)
+      - app.py                        # line 382: vector_db.search(...)
+      - src/vector_databases.py       # all psycopg2 calls — blocking
+      - src/faq_db.py                 # all psycopg2 calls — blocking
+    description: |
+      FastAPI runs on asyncio. All endpoints are `async def`, but:
+        - embedder.embed() uses fastembed/numpy — CPU-bound blocking
+        - vector_db.search() / vector_db.add() use synchronous psycopg2 — I/O blocking
+        - All faq_db functions are synchronous psycopg2 — I/O blocking
+      Blocking calls in async def stall the entire event loop. While one request
+      is embedding a 100-chunk document, zero other requests are served.
+    impact: |
+      Under any concurrent load the server becomes unresponsive.
+      Upload of a large document can block all other requests for several seconds.
+    fix:
+      approach: "Wrap sync calls with asyncio.run_in_executor"
+      steps:
+        - "Import asyncio in app.py"
+        - "For embedding: embeddings = await loop.run_in_executor(None, embedder.embed, chunks)"
+        - "For DB operations: wrap each blocking call in run_in_executor"
+        - "Or: switch vector DB operations to asyncpg (longer-term, pairs with ISSUE_001 fix)"
+      code_sketch: |
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+
+        # In upload_document:
+        embeddings = await loop.run_in_executor(None, embedder.embed, chunks)
+
+        # In query_knowledge_base:
+        query_embedding = await loop.run_in_executor(None, embedder.embed, normalized_question)
+        results = await loop.run_in_executor(None, vector_db.search, query_embedding, request.top_k, resolved_project_id)
+
+  # ---------------------------------------------------------------------------
+  # P1 — HIGH
+  # ---------------------------------------------------------------------------
+
+  - id: ISSUE_005
+    severity: P1
+    category: Structural
+    title: "Schema drift between SQL migration file and Python auto-setup"
+    files_affected:
+      - YAML/multi_project_schema.sql # reference schema
+      - src/faq_db.py                 # line 21: setup_faq_table() — deviates from SQL
+      - src/vector_databases.py       # line 530: _setup_database() — missing index
+    description: |
+      Three divergences between the official SQL schema and what Python creates at startup:
+
+      | Field                          | multi_project_schema.sql        | Python auto-setup          |
+      |--------------------------------|---------------------------------|----------------------------|
+      | faq_entries.id                 | UUID DEFAULT gen_random_uuid()  | SERIAL (integer)           |
+      | faq_entries.project_id         | NOT NULL                        | nullable                   |
+      | faq_entries.source column      | present (VARCHAR 50)            | missing                    |
+      | idx_rag_documents_project_id   | created                         | never created              |
+
+      The missing idx_rag_documents_project_id index means project-scoped vector searches
+      do a full table scan on the project_id filter before applying the HNSW index.
+    impact: |
+      New installs using Python auto-setup have different schema than SQL-migrated installs.
+      project_id nullable allows orphan FAQ entries.
+      Missing index degrades project-scoped search performance at scale.
+    fix:
+      approach: "Align setup_faq_table() and _setup_database() with the SQL schema"
+      steps:
+        - "In setup_faq_table(): change id column to UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+        - "In setup_faq_table(): add NOT NULL constraint on project_id"
+        - "In setup_faq_table(): add source VARCHAR(50) DEFAULT 'pdf_generated' column"
+        - "In _setup_database(): add CREATE INDEX IF NOT EXISTS idx_rag_documents_project_id ON rag_documents(project_id)"
+        - "Update src/models.py FAQEntry.id type from int to str (UUID string)"
+        - "Run migration on existing DB to backfill: UPDATE faq_entries SET project_id = default_project_id WHERE project_id IS NULL"
+
+  - id: ISSUE_006
+    severity: P1
+    category: Structural
+    title: "project_id is never validated as a valid UUID"
+    files_affected:
+      - app.py                        # line 189: project_id Form field in /upload
+      - app.py                        # line 339: project_id in /query
+      - app.py                        # line 157: project_id path param in GET /projects/{id}
+      - src/models.py                 # line 13: QueryRequest.project_id — no UUID validation
+    description: |
+      project_id is accepted as a raw str everywhere. Any non-UUID string (e.g. "abc", "123")
+      is passed to SQL with a ::uuid cast. PostgreSQL raises an exception:
+        'invalid input syntax for type uuid: "abc"'
+      This surfaces as a raw 500 error with a psycopg2 stack trace in the response body.
+    impact: |
+      Bad UX: client gets a 500 instead of a clean 422 validation error.
+      Exposes internal psycopg2 error messages to callers.
+    fix:
+      approach: "Add UUID validation helper and apply at every project_id entry point"
+      steps:
+        - "Add utility: def validate_uuid(v: str) -> bool: try: uuid.UUID(v); return True except ValueError: return False"
+        - "In /upload: if project_id and not validate_uuid(project_id): raise HTTPException(422, 'project_id must be a valid UUID')"
+        - "In /query: add UUID validator to QueryRequest using Pydantic @field_validator"
+        - "In GET/DELETE /projects/{project_id}: validate before DB call, return 404 on bad UUID"
+        - "In src/models.py: add Pydantic UUID type: project_id: Optional[uuid.UUID] = None"
+
+  - id: ISSUE_007
+    severity: P1
+    category: Structural
+    title: "Vector count check and total_chunks use global count, not project-scoped"
+    files_affected:
+      - app.py                        # line 371: stats.get('total_vectors', 0) == 0 check
+      - app.py                        # line 308: total_chunks=stats.get('total_vectors', 0)
+      - src/vector_databases.py       # line 680: get_stats() — SELECT COUNT(*) globally
+    description: |
+      Two problems with the global count:
+      1. Empty-project guard: if Project A has 1000 vectors and Project B has 0,
+         a query to Project B passes the count check (global count = 1000) and
+         falls through to empty results with a misleading 'try rephrasing' message.
+      2. UploadResponse.total_chunks shows the total vectors across ALL projects,
+         not the project the file was uploaded to.
+    impact: |
+      Users querying an empty project get a confusing error instead of
+      "this project has no documents yet."
+      Upload response shows misleading global chunk count.
+    fix:
+      approach: "Add project_id parameter to get_stats() and use scoped count"
+      steps:
+        - "In PgVectorDatabase.get_stats(project_id=None): add WHERE project_id = %s filter when project_id is provided"
+        - "In /upload: call vector_db.get_stats(project_id=resolved_project_id) for total_chunks"
+        - "In /query: call vector_db.get_stats(project_id=resolved_project_id) for the empty-check"
+        - "Return HTTP 400 with clear message: 'Project has no documents. Upload documents first.'"
+
+  - id: ISSUE_008
+    severity: P1
+    category: Scalability + Structural
+    title: "document_counter is in-memory, not persistent, and unsafe across workers"
+    files_affected:
+      - app.py                        # line 80:  document_counter = {"count": 0}
+      - app.py                        # line 261: doc_id = f"doc_{document_counter['count']}_{int(time.time())}"
+    description: |
+      The in-memory counter:
+        1. Resets to 0 on every server restart → doc_0_<timestamp> reused
+        2. With gunicorn -w 4, each worker starts at 0 → identical IDs possible across workers
+        3. The ON CONFLICT DO UPDATE in PgVectorDatabase.add() will silently OVERWRITE
+           a different document's chunks if IDs collide (same counter + same millisecond)
+    impact: |
+      Silent data loss in multi-worker production deployments.
+      Restarts cause document ID reuse which overwrites old data on re-upload.
+    fix:
+      approach: "Generate document IDs with uuid4() — no counter needed"
+      steps:
+        - "Replace: doc_id = f'doc_{document_counter[count]}_{int(time.time())}'"
+        - "With:    import uuid; doc_id = f'doc_{uuid.uuid4().hex[:12]}'"
+        - "Remove document_counter dict entirely"
+        - "In /status: replace total_documents=document_counter['count'] with a DB query:
+           SELECT COUNT(DISTINCT metadata->>'document_id') FROM rag_documents"
+
+  - id: ISSUE_009
+    severity: P1
+    category: Scalability
+    title: "No reconnect logic — single stale connection crashes all DB operations"
+    files_affected:
+      - src/vector_databases.py       # line 522: self.conn created once at init
+      - app.py                        # line 87:  db_conn = vector_db.conn (same connection)
+    description: |
+      If PostgreSQL drops the connection (idle timeout, server restart, Railway network blip),
+      self.conn goes stale. Every subsequent DB call raises:
+        'InterfaceError: connection already closed'
+      FAQ operations fail silently (caught by try/except in app.py), but vector
+      operations raise unhandled exceptions that return 500 to all clients.
+      This is especially common on Railway which closes idle connections after ~5 minutes.
+    impact: |
+      All DB operations fail after any network interruption until server is restarted.
+    fix:
+      approach: "Use ThreadedConnectionPool (from ISSUE_001) — pools handle reconnect.
+                 If staying with single connection, add a ping-and-reconnect wrapper."
+      steps:
+        - "Preferred: implement ISSUE_001 (connection pool) which handles this automatically"
+        - "Fallback: add reconnect() method to PgVectorDatabase that checks conn.closed and reconnects"
+        - "Wrap all DB cursor blocks with a reconnect decorator or try/except/reconnect pattern"
+      code_sketch: |
+        def _ensure_connection(self):
+            if self.conn.closed:
+                self.conn = psycopg2.connect(self.connection_string)
+                self.conn.autocommit = True
+
+        # Call at start of every method:
+        self._ensure_connection()
+
+  - id: ISSUE_010
+    severity: P1
+    category: Structural
+    title: "store_faqs uses N+1 SELECT + INSERT queries per FAQ"
+    files_affected:
+      - src/faq_db.py                 # line 70: per-FAQ SELECT then INSERT loop
+    description: |
+      For each of up to 25 FAQs being stored, the function issues:
+        1. SELECT to check for duplicate question
+        2. INSERT if not duplicate
+      That is up to 50 individual SQL round trips per document upload.
+      With network latency (Railway → PostgreSQL), each round trip ~2-5ms = 100-250ms overhead.
+    impact: |
+      Unnecessary DB round trips slow every upload. Degrades linearly as max_faqs grows.
+    fix:
+      approach: "Replace SELECT + INSERT loop with single bulk INSERT ON CONFLICT DO NOTHING"
+      steps:
+        - "Collect all FAQ tuples into a list"
+        - "Use execute_values() with INSERT ... ON CONFLICT (project_id, question, source_file) DO NOTHING"
+        - "Add UNIQUE constraint: ALTER TABLE faq_entries ADD CONSTRAINT uq_faq_per_file UNIQUE (project_id, question, source_file)"
+        - "Return inserted count using cursor.rowcount"
+      code_sketch: |
+        from psycopg2.extras import execute_values
+
+        rows = [(project_id, faq['question'], faq['answer'], faq['category'], source_file)
+                for faq in faqs if faq.get('question') and faq.get('answer')]
+
+        execute_values(cur,
+            """INSERT INTO faq_entries (project_id, question, answer, category, source_file)
+               VALUES %s
+               ON CONFLICT (project_id, question, source_file) DO NOTHING""",
+            rows)
+        return cur.rowcount
+
+  - id: ISSUE_017
+    severity: P1
+    category: Security
+    title: "project_id=None fallback leaks cross-project data when DB setup fails"
+    files_affected:
+      - app.py                        # line 339: resolved_project_id = request.project_id or default_project_id
+      - app.py                        # line 382: vector_db.search(..., project_id=resolved_project_id)
+    description: |
+      At startup, if DB setup fails (e.g. PostgreSQL unreachable), db_conn = None
+      and default_project_id = None. Then on any query:
+        resolved_project_id = request.project_id or None  →  None
+        vector_db.search(query_embedding, top_k, project_id=None)
+      In PgVectorDatabase.search(), project_id=None triggers the unscoped branch:
+        SELECT ... FROM rag_documents  (no WHERE clause)
+      This returns vectors from ALL projects to any caller, bypassing isolation.
+    impact: |
+      Data isolation breach: all projects' data exposed when DB partially fails at startup.
+    fix:
+      approach: "Fail hard if default_project_id is None, never fall through to unscoped search"
+      steps:
+        - "After startup: if VECTOR_DB_CONFIG['provider'] == 'pgvector' and default_project_id is None: raise RuntimeError('DB setup failed — cannot start server safely')"
+        - "In /query: if resolved_project_id is None: raise HTTPException(503, 'Project system unavailable')"
+        - "Never pass project_id=None to vector_db.search() in a multi-project context"
+
+  # ---------------------------------------------------------------------------
+  # P2 — MEDIUM
+  # ---------------------------------------------------------------------------
+
+  - id: ISSUE_011
+    severity: P2
+    category: Scalability
+    title: "FAQ generation blocks the upload HTTP response (up to 180s)"
+    files_affected:
+      - app.py                        # line 284: faqs = generate_faqs(full_text, llm_client, ...)
+    description: |
+      generate_faqs() is called synchronously during POST /upload before returning the response.
+      With Ollama, the timeout is 180s. Even with Gemini Flash, a 50K-char document can take
+      5-15 seconds. The client must wait for FAQ generation to complete before getting a response.
+      CLAUDE.md notes this: "Can be moved to FastAPI BackgroundTasks if needed."
+    impact: |
+      Upload endpoint appears slow or times out for large documents.
+      Clients must wait for FAQ generation before confirming upload success.
+    fix:
+      approach: "Move FAQ generation to FastAPI BackgroundTasks"
+      steps:
+        - "Add BackgroundTasks parameter to upload_document signature"
+        - "Replace synchronous generate_faqs() call with: background_tasks.add_task(run_faq_generation, full_text, llm_client, file.filename, db_conn, resolved_project_id)"
+        - "Define run_faq_generation() as a standalone function"
+        - "Return UploadResponse immediately with faqs_generated=0 (pending)"
+        - "Add a GET /faqs/status?document_id= endpoint if clients need to know when FAQs are ready"
+      code_sketch: |
+        from fastapi import BackgroundTasks
+
+        @app.post("/upload")
+        async def upload_document(
+            ...,
+            background_tasks: BackgroundTasks,
+        ):
+            # ... embed and store vectors ...
+
+            background_tasks.add_task(
+                run_faq_generation,
+                full_text, llm_client, file.filename, db_conn, resolved_project_id
+            )
+            return UploadResponse(..., faqs_generated=0)
+
+  - id: ISSUE_012
+    severity: P2
+    category: Structural
+    title: "Duplicate document uploads create duplicate vector chunks"
+    files_affected:
+      - app.py                        # line 273: vector_db.add() — no dedup check
+    description: |
+      Uploading the same file twice to the same project inserts duplicate chunks
+      (timestamp-based IDs differ so ON CONFLICT rarely fires). Duplicate chunks:
+        - Return the same passage twice in RAG results
+        - Inflate similarity scores for that document
+        - FAQs are deduplicated by exact question+source_file match, but vectors are not
+    impact: |
+      Skewed retrieval quality. Same chunk appears twice in LLM context. Wastes storage.
+    fix:
+      approach: "Hash document content and skip re-embedding if already present"
+      steps:
+        - "import hashlib; doc_hash = hashlib.sha256(file_bytes).hexdigest()"
+        - "Add doc_hash column to rag_documents metadata JSONB"
+        - "Before embedding: SELECT COUNT(*) FROM rag_documents WHERE metadata->>'doc_hash' = %s AND project_id = %s"
+        - "If count > 0: skip embedding, optionally re-generate FAQs, return early with message 'Document already uploaded'"
+        - "Store doc_hash in metadata dict for each chunk"
+
+  - id: ISSUE_013
+    severity: P2
+    category: Scalability
+    title: "GET /faqs has no pagination — returns all FAQs in one response"
+    files_affected:
+      - app.py                        # line 422: get_faqs()
+      - src/faq_db.py                 # line 136: get_all_faqs() — SELECT all rows
+    description: |
+      With many uploads to one project, faq_entries grows unbounded.
+      SELECT * FROM faq_entries WHERE project_id = ? with no LIMIT can return
+      thousands of rows in a single HTTP response. The mind map SVG also has no
+      virtual scrolling — rendering becomes unusable past ~200 FAQs.
+    impact: |
+      Large responses degrade frontend performance. DB query time increases linearly.
+    fix:
+      approach: "Add limit/offset pagination and a per-category cap"
+      steps:
+        - "Add query params to GET /faqs: limit: int = 200, offset: int = 0"
+        - "In get_all_faqs(): add LIMIT %s OFFSET %s to query"
+        - "Return pagination metadata in FAQsResponse: {total, limit, offset, has_more}"
+        - "In mind map UI: load first 200 FAQs, add 'Load more' per category if needed"
+
+  - id: ISSUE_014
+    severity: P2
+    category: Structural
+    title: "ProjectCreate.project_name has no validation"
+    files_affected:
+      - src/models.py                 # line 79: project_name: str — bare string
+    description: |
+      project_name accepts empty strings, whitespace-only names, or strings longer
+      than 255 characters (which hit PostgreSQL VARCHAR(255) and return a raw psycopg2
+      DataError as a 500). Multiple projects can share identical names.
+    impact: |
+      Confusing duplicate project names in the UI. Raw DB errors on too-long names.
+    fix:
+      approach: "Add Pydantic field constraints"
+      steps:
+        - "from pydantic import Field"
+        - "project_name: str = Field(min_length=1, max_length=255, strip_whitespace=True)"
+        - "Optionally: add a uniqueness check in create_project() before INSERT and raise HTTP 409 if taken"
+
+  - id: ISSUE_015
+    severity: P2
+    category: Structural
+    title: "top_k in QueryRequest has no upper bound"
+    files_affected:
+      - src/models.py                 # line 12: top_k: Optional[int] = RAG_CONFIG["top_k"]
+    description: |
+      top_k accepts any integer. A caller sending top_k=100000 causes:
+        LIMIT 100000 in the pgvector search — returns up to entire table
+        All results passed to the LLM as context — exceeds token limits
+        Extremely slow queries under any real data volume
+    impact: |
+      Resource exhaustion on both the DB and LLM API. Possible OOM on context assembly.
+    fix:
+      approach: "Add Pydantic Field constraints"
+      steps:
+        - "top_k: Optional[int] = Field(default=RAG_CONFIG['top_k'], ge=1, le=50)"
+
+  - id: ISSUE_016
+    severity: P2
+    category: Security
+    title: "CORS allows all origins — not enforced at deployment"
+    files_affected:
+      - config.py                     # line 187: "cors_origins": ["*"]
+    description: |
+      CORS is configured as wildcard. The comment says "adjust for production"
+      but there is no mechanism that enforces this or warns if deployed as-is.
+      In production, CORS should be restricted to the actual frontend domain
+      (e.g. sellbot-ai.vercel.app).
+    impact: |
+      Any website can make credentialed cross-origin requests to the API.
+    fix:
+      approach: "Read CORS origins from environment variable with a strict default"
+      steps:
+        - "Add to .env: CORS_ORIGINS=https://sellbot-ai.vercel.app"
+        - "In config.py: 'cors_origins': os.getenv('CORS_ORIGINS', '').split(',') or raise ValueError if empty in prod"
+        - "Or warn loudly on startup if CORS_ORIGINS contains '*' and APP_ENV=production"
+
+
+  # ---------------------------------------------------------------------------
+  # NEW ISSUES — Identified 2026-03-04
+  # ---------------------------------------------------------------------------
+
+  - id: ISSUE_018
+    severity: P1
+    category: Structural + Frontend
+    title: "No 'Connected Documents' view — users cannot see which files are uploaded to a project"
+    files_affected:
+      - app.py                              # no GET /projects/{id}/documents endpoint
+      - RAG/src/pages/DashboardPage.tsx     # no document list panel
+      - RAG/src/components/mindmap/MindMapView.tsx  # no uploaded files list in UI
+    description: |
+      After uploading documents to a project there is no way in the UI — or via
+      the API — to see which files are currently stored in that project.
+
+      The data already exists:
+        - File names are stored in metadata->>'filename' in every rag_documents row
+        - File names are stored in source_file column of every faq_entries row
+
+      But there is:
+        - No GET /projects/{project_id}/documents endpoint
+        - No documents panel or file list in DashboardPage or MindMapView
+        - No way to delete a single document (only DELETE /reset which wipes all vectors)
+    impact: |
+      Users must guess what documents are indexed.
+      Re-uploading the same file creates duplicate vectors (see ISSUE_012).
+      Cannot remove a single wrong/outdated document without wiping everything.
+    fix:
+      approach: "Add a documents endpoint + a collapsible file list panel in MindMapView"
+      backend_steps:
+        - "Add GET /projects/{project_id}/documents endpoint in app.py"
+        - "SQL: SELECT DISTINCT metadata->>'filename' AS filename, COUNT(*) AS chunk_count,
+           MIN(created_at) AS uploaded_at FROM rag_documents WHERE project_id = %s::uuid
+           GROUP BY filename ORDER BY uploaded_at DESC"
+        - "Return: [{filename, chunk_count, uploaded_at}]"
+        - "Add DELETE /projects/{project_id}/documents/{filename} endpoint to remove one file's vectors + FAQs"
+        - "SQL: DELETE FROM rag_documents WHERE project_id = %s::uuid AND metadata->>'filename' = %s"
+        - "        DELETE FROM faq_entries WHERE project_id = %s::uuid AND source_file = %s"
+      frontend_steps:
+        - "Add documentService.ts with getDocuments(projectId) and deleteDocument(projectId, filename)"
+        - "Add RAG_URLS.PROJECT_DOCUMENTS: (id) => '/projects/${id}/documents' to urls.ts"
+        - "In MindMapView.tsx: add a collapsible 'Uploaded Files' side panel listing files with delete button"
+        - "Show chunk_count and uploaded_at for each file"
+        - "On delete: confirm dialog → call deleteDocument → refresh FAQ tree"
+
+  - id: ISSUE_019
+    severity: P2
+    category: RAG Pipeline
+    title: "FAQ full-text search threshold too aggressive — single word queries always bypass RAG"
+    files_affected:
+      - src/faq_db.py                # line 246: if rank < 0.01: return None
+      - app.py                       # /query endpoint — FAQ-first pipeline
+    description: |
+      The query pipeline is FAQ-first: any query that matches a FAQ question with
+      ts_rank > 0.01 immediately returns the FAQ answer and skips the RAG pipeline.
+
+      The threshold 0.01 is extremely permissive. A single word overlap is enough
+      to satisfy it. This means:
+
+        - User types "parking" → ts_rank > 0.01 against "Is parking available? Yes, 2 slots per flat."
+          → returns that FAQ answer even if the user meant "visitor parking cost" or
+            "parking dimensions for double-decker"
+        - User types "price" → matches any of 5 pricing FAQs → returns the first one
+          even if the user's intent was to compare prices across documents
+        - User types "location" → returns the generic location FAQ even if user wanted
+          the exact GPS coordinates from an uploaded PDF
+
+      The FAQ-first design was intended as a fast shortcut for common verbatim questions.
+      At 0.01 it becomes a hijack — users cannot reach the RAG pipeline with broad queries.
+    impact: |
+      - Irrelevant FAQ answers returned for queries where the user's intent differs from FAQ wording
+      - RAG pipeline (which uses full document context) is effectively bypassed for any common word
+      - Users lose trust when vague one-word queries return confidently wrong FAQ answers
+    fix:
+      approach: "Raise threshold AND add minimum query length guard"
+      option_1_quickest:
+        label: "Raise threshold (single-line fix)"
+        file: src/faq_db.py
+        line: 246
+        change: "if rank < 0.01 → if rank < 0.15"
+        note: "0.15 requires a meaningful phrase match, not just word presence"
+      option_2_length_guard:
+        label: "Minimum word count before FAQ search"
+        file: app.py
+        change: |
+          # In /query endpoint, before calling search_faq():
+          words = normalized_question.strip().split()
+          if len(words) >= 4:
+              faq_result = search_faq(normalized_question, db_conn, project_id=resolved_project_id)
+          else:
+              faq_result = None  # short queries go straight to RAG
+        note: "Queries under 4 words skip FAQ and go to RAG — avoids false confidence on vague terms"
+      option_3_best:
+        label: "Run both, return both to LLM"
+        change: |
+          Run FAQ search and RAG search in parallel.
+          Pass both results to the LLM with instruction:
+          'If the FAQ directly answers the question, use it.
+           Otherwise use the document chunks.'
+        note: "Best answer quality but doubles LLM context size and cost"
+      recommended: "option_1_quickest + option_2_length_guard together — fast, no LLM change needed"
+
+  - id: ISSUE_020
+    severity: P2
+    category: Structural + Frontend
+    title: "AI chat shows no source document attribution — user cannot verify which file answered"
+    files_affected:
+      - RAG/src/components/mindmap/MindMapView.tsx   # chat messages rendered without source panel
+      - src/models.py                                 # QueryResponse.sources exists but not shown
+    description: |
+      The backend QueryResponse already returns a sources list:
+        { answer, sources: [{filename, relevance}], processing_time_ms, source_type }
+
+      However the MindMapView AI chat panel only renders the answer text.
+      The sources array is fetched but never displayed to the user.
+
+      This means:
+        - User cannot see which uploaded document provided the answer
+        - User cannot cross-check the answer against the original file
+        - When source_type="faq", user doesn't know which document originally generated that FAQ
+        - When source_type="rag", user doesn't know if the answer came from Brochure_A.pdf
+          or PriceList_B.xlsx — important for real estate sales decisions
+
+      Additionally, source_type="faq" vs "rag" badge exists in the response
+      but is not shown in the chat UI.
+    impact: |
+      Users cannot audit or trust answers without knowing the source document.
+      In real estate, factual accuracy matters — wrong price from wrong project document
+      can cause serious miscommunication.
+    fix:
+      approach: "Show source chips and source_type badge below each AI answer in chat"
+      frontend_steps:
+        - "In MindMapView.tsx chat panel: after rendering the answer markdown, add a sources row"
+        - "Render source_type badge: green 'FAQ' or blue 'Document' pill"
+        - "Render source chips: for each source in sources array, show filename + relevance %"
+        - "Chip style: small pill with file icon (FileText from lucide-react), filename truncated,
+           relevance shown as e.g. '82% match'"
+        - "On chip click: if ISSUE_018 is fixed, navigate to the file in the documents list"
+      data_available:
+        - "response.source_type: 'faq' | 'rag'"
+        - "response.sources: [{filename: string, relevance: float}]"
+        - "response.processing_time_ms: number"
+      ui_sketch: |
+        [ Answer text rendered with react-markdown ]
+
+        ┌─────────────────────────────────────────────┐
+        │ 📄 FAQ  •  Sunrise_Heights_Brochure.pdf 82% │
+        │           Green_Valley_PriceList.xlsx  71%  │
+        └─────────────────────────────────────────────┘
+        [ 340ms ]
+
+  - id: ISSUE_021
+    severity: P2
+    category: Feature + Structural
+    title: "Dashboard has no global AI chat — users cannot query across all projects at once"
+    files_affected:
+      - RAG/src/pages/DashboardPage.tsx     # no chat panel
+      - app.py                              # /query always resolves to a single project_id
+      - src/models.py                       # QueryRequest has no global_search mode
+      - src/vector_databases.py             # search() always filters by project_id when set
+    description: |
+      The MindMapView has an AI chat panel scoped to one project.
+      The Dashboard (projects listing page) has no AI chat at all.
+
+      Users want a GLOBAL chat on the Dashboard that searches across ALL
+      documents from ALL projects simultaneously — useful for cross-project
+      questions like:
+        "Which project has the cheapest 3BHK?"
+        "Do any of my projects have swimming pools?"
+        "Compare parking facilities across all uploaded brochures"
+
+      Current backend gap:
+        POST /query with no project_id → resolves to default_project_id
+        (line: resolved_project_id = request.project_id or default_project_id)
+        There is NO mode that searches across all projects — it always scopes to one.
+
+      So two things are missing:
+        1. A backend "global search" mode (search all rag_documents with no project filter)
+        2. A chat UI panel on the DashboardPage
+
+    impact: |
+      Users must open each project individually and re-ask the same question to
+      compare answers. Cross-project questions are impossible with current routing.
+
+    fix:
+      approach: "Add global_search flag to QueryRequest + chat panel on DashboardPage"
+
+      backend_steps:
+        - step: "Add global_search field to QueryRequest in src/models.py"
+          code: |
+            class QueryRequest(BaseModel):
+                question: str
+                top_k: Optional[int] = RAG_CONFIG["top_k"]
+                project_id: Optional[str] = None
+                global_search: bool = False   # NEW — search all projects when True
+
+        - step: "In /query endpoint in app.py, handle global_search=True"
+          code: |
+            if request.global_search:
+                resolved_project_id = None   # no project filter → searches all rows
+            else:
+                resolved_project_id = request.project_id or default_project_id
+
+            # Then pass resolved_project_id to search() and search_faq()
+            # When resolved_project_id is None:
+            #   vector_db.search() → no WHERE project_id filter (already supported)
+            #   search_faq() → no WHERE project_id filter (already supported)
+
+        - step: "Verify PgVectorDatabase.search() and search_faq() already handle project_id=None"
+          note: |
+            Both functions already have an if/else on project_id:
+              if project_id: → scoped query
+              else:          → unscoped query (all rows)
+            So the backend behaviour is already correct — only the resolver in
+            app.py needs to stop forcing default_project_id when global_search=True.
+
+        - step: "Update system prompt for global search context"
+          note: |
+            When global_search=True, chunks come from multiple projects.
+            The LLM system prompt already says: 'cite the property or project name
+            in your answer' — this handles cross-project answers naturally.
+
+      frontend_steps:
+        - step: "Add a floating chat button to DashboardPage"
+          detail: |
+            Bottom-right fixed button: chat bubble icon (MessageSquare from lucide-react)
+            Clicking opens a slide-up chat panel (same glass-card dark style as MindMapView)
+
+        - step: "Chat panel state in DashboardPage"
+          detail: |
+            useState: messages[], inputText, isLoading, showChat
+            On send: call ragService.postQuery({ question, global_search: true })
+            No project_id passed → backend uses global_search mode
+
+        - step: "Chat panel UI"
+          detail: |
+            Header: 'Global Knowledge Search' with a LayoutGrid icon
+            Subtitle: 'Searching across all [N] projects'
+            Message bubbles: same style as MindMapView chat
+            Source chips: show filename AND project_name (ISSUE_020 extension)
+            Empty state: 'Ask anything across all your uploaded documents'
+
+        - step: "Add global_search: true to ragService.postQuery call"
+          file: RAG/src/services/api/ragService.ts
+          detail: |
+            postQuery already accepts a QueryRequest body.
+            Just pass { question, global_search: true } for dashboard calls.
+
+      ui_sketch: |
+        ┌─ DashboardPage ─────────────────────────────────────────┐
+        │  Projects                              [+ New Project]   │
+        │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐                   │
+        │  │Proj A│ │Proj B│ │Proj C│ │  +   │                   │
+        │  └──────┘ └──────┘ └──────┘ └──────┘                   │
+        │                                                          │
+        │                              ┌────────────────────────┐ │
+        │                              │  Global Knowledge Chat │ │
+        │                              │  Searching 3 projects  │ │
+        │                              │  ─────────────────── │ │
+        │                              │  User: Which project   │ │
+        │                              │  has cheapest 3BHK?    │ │
+        │                              │                         │ │
+        │                              │  AI: Sunrise Heights... │ │
+        │                              │  📄 RAG • Brochure.pdf  │ │
+        │                              │  ─────────────────── │ │
+        │                              │  [ Ask anything... ] →  │ │
+        │                              └────────────────────────┘ │
+        │                                          [💬]            │
+        └──────────────────────────────────────────────────────────┘
+
+    dependencies:
+      - "ISSUE_020 source chips (optional but strongly recommended — cross-project answers
+         need to show which project+file answered)"
+      - "No dependency on ISSUE_018 (documents view) — can be implemented independently"
+
+    notes:
+      - "global_search=True bypasses project isolation intentionally — it is a user-requested
+         cross-project feature, not a data leak. The fix for ISSUE_017 (startup failure fallback)
+         must ensure the None path is only reachable via explicit global_search flag."
+      - "FAQ search across all projects also works (search_faq with project_id=None returns
+         the best FAQ match across all faq_entries) — this is desirable for global chat."
+
+
+# =============================================================================
+# Fix Priority Order (recommended implementation sequence)
+# =============================================================================
+
+fix_order:
+  phase_1_critical:
+    label: "Fix before any production traffic"
+    issues: [ISSUE_001, ISSUE_002, ISSUE_003, ISSUE_004, ISSUE_017]
+    rationale: |
+      These will cause crashes, data corruption, or security breaches under
+      real usage. Must be fixed before the system handles any real data.
+
+  phase_2_correctness:
+    label: "Fix before multi-user launch"
+    issues: [ISSUE_005, ISSUE_006, ISSUE_007, ISSUE_008, ISSUE_009, ISSUE_010]
+    rationale: |
+      Incorrect behaviour, data isolation breaches, and hard failures that
+      affect correctness. Fix these before onboarding multiple projects/clients.
+
+  phase_3_quality:
+    label: "Fix for production stability"
+    issues: [ISSUE_011, ISSUE_012, ISSUE_013, ISSUE_014, ISSUE_015, ISSUE_016]
+    rationale: |
+      Quality, performance, and UX improvements. System works without these
+      but degrades at scale or with misuse.
+
+  phase_4_ux:
+    label: "Fix for user trust and usability (2026-03-04 issues)"
+    issues: [ISSUE_018, ISSUE_019, ISSUE_020, ISSUE_021]
+    rationale: |
+      ISSUE_019 (FAQ threshold) is a quick single-line backend fix that
+      immediately improves answer relevance. ISSUE_018 (documents view) and
+      ISSUE_020 (source attribution) require new frontend panels + one new
+      backend endpoint. ISSUE_021 (global dashboard chat) builds on ISSUE_020
+      source chips and requires a backend global_search flag. All four form
+      the "document transparency + cross-project search" feature set.
+      Recommended order: 019 → 020 → 018 → 021
+
+
+# =============================================================================
+# Files to change per phase (summary)
+# =============================================================================
+
+files_to_change:
+  phase_1:
+    - src/vector_databases.py     # ThreadedConnectionPool + executor wrapping
+    - app.py                      # APIKeyMiddleware, reset fix, executor wrapping, startup guard
+    - config.py                   # Add API_KEY env var
+
+  phase_2:
+    - src/faq_db.py               # setup_faq_table UUID id + NOT NULL + source column + bulk insert
+    - src/vector_databases.py     # _setup_database() add project_id index + reconnect wrapper
+    - src/models.py               # UUID validators, Field constraints
+    - app.py                      # project_id UUID validation, scoped get_stats, uuid4 doc IDs
+
+  phase_3:
+    - app.py                      # BackgroundTasks for FAQ gen, doc hash dedup check
+    - src/faq_db.py               # get_all_faqs() pagination
+    - src/models.py               # project_name Field, top_k Field
+    - config.py                   # CORS_ORIGINS from env var
+
+  phase_4:
+    - src/faq_db.py               # ISSUE_019: raise rank threshold 0.01 → 0.15
+    - app.py                      # ISSUE_019: min word count guard before FAQ search
+                                  # ISSUE_018: GET /projects/{id}/documents endpoint
+                                  # ISSUE_018: DELETE /projects/{id}/documents/{filename}
+                                  # ISSUE_021: global_search=True bypass in /query resolver
+    - src/models.py               # ISSUE_021: add global_search: bool = False to QueryRequest
+    - RAG/src/services/api/urls.ts            # ISSUE_018: PROJECT_DOCUMENTS url
+    - RAG/src/services/api/documentService.ts # ISSUE_018: new service file (getDocuments, deleteDocument)
+    - RAG/src/components/mindmap/MindMapView.tsx  # ISSUE_018: file list panel
+                                                  # ISSUE_020: source chips + source_type badge
+    - RAG/src/pages/DashboardPage.tsx         # ISSUE_021: global chat panel + floating chat button
+
+  # ---------------------------------------------------------------------------
+  # P1 — FAQ PIPELINE REDESIGN (2026-03-04)
+  # ---------------------------------------------------------------------------
+
+  - id: ISSUE_022
+    severity: P1
+    category: RAG Pipeline
+    title: "FAQ fast-path in /query produces wrong answers — remove entirely"
+    status: resolved
+    date_fixed: "2026-03-04"
+    files_affected:
+      - app.py       # lines 414–446: entire Step 1 FAQ fast-path block
+      - src/faq_db.py  # search_faq() now unused from query path
+    description: |
+      The /query endpoint first runs a PostgreSQL ts_rank full-text search against
+      the faq_entries table. If the score > 0.15 AND query >= 4 words, it returns
+      the stored FAQ answer immediately — skipping RAG entirely.
+
+      This is fundamentally wrong for a conversational assistant:
+      - The FAQ table is a static snapshot (generated at upload time)
+      - User questions evolve and often don't match the phrasing in stored FAQs
+      - Short queries like "parking", "price" and partial phrases bypassed RAG
+        even after the ISSUE_019 threshold fix — the 4-word and 0.15 filters helped
+        but didn't fix the core problem
+      - Users asking follow-ups or nuanced questions got stale FAQ answers instead
+        of fresh LLM-generated answers from the actual document
+
+      The FAQ table should be a DISPLAY layer (for the mind map), not an answer source.
+    root_cause: |
+      Wrong architectural assumption: FAQs were treated as a lookup cache for the
+      query pipeline. They should only be used for the mind map display.
+    fix:
+      approach: "Remove Step 1 (FAQ fast-path) block from /query entirely. All queries → RAG."
+      steps:
+        - "Delete the query_words + search_faq block from app.py /query"
+        - "Remove search_faq import from app.py (still keep it in faq_db.py for potential future use)"
+        - "source_type is now always 'rag'"
+    impact_after_fix: |
+      All AI chat queries now always embed → vector search → LLM.
+      Slightly slower but always accurate and context-aware.
+
+  - id: ISSUE_023
+    severity: P1
+    category: RAG Pipeline
+    title: "Chat Q&A not saved to FAQ table — mind map never learns from conversations"
+    status: resolved
+    date_fixed: "2026-03-04"
+    files_affected:
+      - app.py       # /query endpoint — add save_chat_faq() after RAG answer
+      - src/faq_db.py  # add save_chat_faq() helper
+    description: |
+      FAQs are currently only generated at upload time by the LLM reading the document.
+      When a user asks a question in the AI chat and gets a good RAG answer, that
+      Q&A pair is thrown away — it never appears in the mind map.
+
+      This means:
+      - The mind map only reflects what the LLM extracted at upload time
+      - Frequently-asked questions from real users never show up as FAQ nodes
+      - The system doesn't improve from usage
+
+      Desired behaviour: every successful RAG answer (with actual document results)
+      should be auto-saved to faq_entries with source_file='user_chat' so it appears
+      in the mind map on the next refresh.
+    fix:
+      approach: |
+        After /query generates a RAG answer (and results were non-empty), call:
+          store_faqs([{question, answer, category='General'}], source_file='user_chat', conn, project_id)
+        This is non-fatal — if the insert fails, the answer is still returned.
+      dedup: |
+        The existing store_faqs() dedup logic (SELECT existing questions by source_file+project_id)
+        prevents the same question from being added twice — safe to call on every query.
+      category: |
+        Saved with category='General' by default. Future enhancement: LLM-based
+        category detection from the answer content.
+      source_file: "'user_chat' — clearly distinct from document-generated FAQs"
+      deletion: |
+        user_chat FAQs persist even when documents are deleted (ISSUE_024 only
+        deletes FAQs where source_file = actual_filename). This is intentional —
+        chat FAQs represent real user questions and should survive document refreshes.
+
+  - id: ISSUE_024
+    severity: P1
+    category: Data Management
+    title: "No per-document delete — cannot remove a single file's chunks + FAQs"
+    status: resolved
+    date_fixed: "2026-03-04"
+    files_affected:
+      - src/vector_databases.py        # add delete_document() to PgVectorDatabase
+      - src/faq_db.py                  # delete_faqs_by_file() already exists — reused
+      - app.py                         # add DELETE /projects/{project_id}/documents/{document_id}
+      - RAG/src/services/api/urls.ts   # add PROJECT_DOCUMENT_DELETE URL
+      - RAG/src/services/api/projectService.ts  # add deleteProjectDocument()
+      - RAG/src/components/mindmap/MindMapView.tsx  # delete button in Files panel
+    description: |
+      Currently the only way to remove data is:
+        DELETE /reset — wipes ALL vectors (and FAQs) globally
+        DELETE /projects/{id} — deletes an entire project + all its data
+
+      There is no way to delete a single document from a project.
+      If a user uploads the wrong file, or wants to replace a stale brochure,
+      they have no option except resetting the whole project.
+
+      Also: when a document IS removed, its upload-generated FAQs should be
+      removed too (FAQs where source_file = that document's filename).
+    fix:
+      backend:
+        - "PgVectorDatabase.delete_document(document_id, project_id): deletes all rows WHERE metadata->>'document_id' = %s AND project_id = %s::uuid; returns filename"
+        - "App endpoint: DELETE /projects/{project_id}/documents/{document_id}"
+        - "Endpoint flow: lookup filename → delete_document() → delete_faqs_by_file(filename)"
+      frontend:
+        - "Documents panel (Files tab) in MindMapView: add trash icon per file row"
+        - "On click: confirm → DELETE request → reload documents + reload FAQs"
+    cascade: |
+      Only document-upload FAQs (source_file = filename) are deleted.
+      user_chat FAQs (source_file = 'user_chat') are NOT deleted — they come from
+      real user questions, not the document, so they remain valid.
+
+  - id: ISSUE_025
+    severity: P2
+    category: Data Quality
+    title: "Duplicate FAQ entries when same question asked multiple times in AI chat"
+    status: open
+    files_affected:
+      - app.py                  # lines 502–511: auto-save block (ISSUE_023)
+      - src/faq_db.py           # store_faqs() — no duplicate check before INSERT
+    description: |
+      Every call to POST /query that produces an answer triggers store_faqs() to
+      save the Q&A pair to the faq_entries table (source_file='user_chat').
+      There is no duplicate check. If a user asks the same question twice, the
+      table ends up with two identical rows:
+
+        id=5  question="What is the price?"  answer="..."  source_file="user_chat"
+        id=9  question="What is the price?"  answer="..."  source_file="user_chat"
+
+      Both rows appear as separate nodes on the FAQ mind map, cluttering it with
+      repeated questions.
+
+    options:
+      option_a_app_guard:
+        approach: "Check in app.py before store_faqs() call"
+        description: |
+          Before calling store_faqs(), run a SELECT to check if a FAQ entry with
+          the same question already exists for this project. If yes, skip the save.
+        pros:
+          - Simple, targeted, no schema change needed
+        cons:
+          - Extra DB round-trip on every query
+          - Only prevents duplicates from user_chat auto-saves; upload FAQs still
+            have no dedup guard
+
+      option_b_faq_db_guard:
+        approach: "Duplicate check inside store_faqs() in src/faq_db.py"
+        description: |
+          For each FAQ entry in the list, do SELECT EXISTS(... WHERE question = %s
+          AND project_id = %s) before the INSERT. Skip if already exists.
+        pros:
+          - Fixes deduplication for ALL callers (upload FAQs + user_chat)
+          - Single responsibility — data layer enforces uniqueness
+        cons:
+          - N extra SELECTs per store_faqs() call (one per FAQ entry)
+
+      option_c_db_constraint:
+        approach: "UNIQUE constraint on (question, project_id) + INSERT ON CONFLICT DO NOTHING"
+        description: |
+          ALTER TABLE faq_entries ADD CONSTRAINT faq_unique_question_project
+            UNIQUE (question, project_id);
+          Change INSERT in store_faqs() to:
+            INSERT INTO faq_entries (...) VALUES (...) ON CONFLICT DO NOTHING;
+        pros:
+          - Zero application logic needed
+          - Enforced at DB level — impossible to insert duplicates regardless of caller
+          - No extra SELECT round-trips
+        cons:
+          - Requires a one-time schema migration (ALTER TABLE)
+          - Exact string match only — "What is the price?" and "what is the price?"
+            would be treated as different questions unless lower() normalization added
+
+    recommendation: |
+      Option C (DB-level UNIQUE constraint) is the most robust.
+      Option B is the pragmatic middle ground if schema migration is not desired.
+      Combine with lower() normalization on question text for best dedup coverage.
+
+fix_order:
+  phase_5_faq_redesign:
+    priority: P1
+    description: |
+      Fundamental FAQ pipeline redesign — remove FAQ from query path, make it
+      purely a display/discovery layer. Auto-populate from real user interactions.
+    issues: [ISSUE_022, ISSUE_023, ISSUE_024]
+    implementation_order: "022 (remove path) → 023 (auto-save) → 024 (doc delete)"
+    files_to_change:
+      - app.py                              # ISSUE_022: remove FAQ block; ISSUE_023: add auto-save; ISSUE_024: new endpoint
+      - src/faq_db.py                       # ISSUE_023: save_chat_faq() helper
+      - src/vector_databases.py             # ISSUE_024: delete_document()
+      - RAG/src/services/api/urls.ts        # ISSUE_024: PROJECT_DOCUMENT_DELETE url
+      - RAG/src/services/api/projectService.ts  # ISSUE_024: deleteProjectDocument()
+      - RAG/src/components/mindmap/MindMapView.tsx  # ISSUE_024: delete button in Files panel

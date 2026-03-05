@@ -1,0 +1,444 @@
+################################################################################
+# RAG FRONTEND — v2.1.0 System Reference
+# Project: SellBot AI — Interactive FAQ Mind Map UI
+# Phase: Multi-Project RAG + FAQ Mind Map (complete, 2026-03-01)
+#         General category rules + Delete/Clear + Multi-file upload (2026-03-05)
+# Stack: React 19 · TypeScript · Vite · Tailwind v3 · Redux Toolkit · Axios · framer-motion
+# Previous version: RAG_frontend.yml (v1) → RAG_frontend_v2.yml (v2.0)
+################################################################################
+
+project:
+  name: SellBot RAG Frontend
+  version: "2.1.0"
+  description: >
+    Kimi-style interactive SVG FAQ mind map interface for the SellBot RAG backend.
+    Uploaded documents auto-generate FAQ trees (Root → Category nodes).
+    Clicking a category opens a side panel with FAQ items and an inline AI chat panel.
+    DashboardPage lists all projects; clicking a project navigates to its mind map.
+  location: RAG/  # directory relative to project root
+  dev_port: 3000
+  api_target: http://localhost:8000  # backend
+
+# ==============================================================================
+# TECH STACK
+# ==============================================================================
+
+tech_stack:
+  runtime:
+    react: "19.2.0"
+    react_dom: "19.2.0"
+    typescript: "5.9.3"
+    node_required: ">=18"
+
+  build_tool:
+    vite: "7.3.1"
+    plugin: "@vitejs/plugin-react 5.1.1"
+
+  styling:
+    tailwindcss: "3.4.19"  # Tailwind v3 — NOT v4
+    approach: Utility-first with custom design tokens
+    fonts: Inter (Google Fonts)
+    dark_theme: "Midnight Rose palette (see design_tokens)"
+
+  state_management:
+    redux_toolkit: "2.11.2"
+    react_redux: "9.2.0"
+    redux_persist: "6.0.0"
+    persistence_storage: localStorage
+    persist_whitelist: [auth, organization, chat]
+    # IMPORTANT: 'faq' is NOT in the whitelist — FAQ state is never persisted.
+    # FAQ always starts empty and is fetched fresh from GET /faqs on mount.
+    # Removed from whitelist to fix stale FAQ data bug (ERR_015).
+
+  routing:
+    react_router_dom: "7.13.0"
+    router_type: BrowserRouter  # wraps App in main.tsx
+
+  http:
+    axios: "1.13.5"
+    timeout_default: 30000ms
+    timeout_upload: 120000ms
+
+  forms:
+    react_hook_form: "7.71.1"
+    resolvers: "@hookform/resolvers 5.2.2"
+    validation: "zod 4.3.6"
+
+  content_rendering:
+    react_markdown: "10.1.0"
+    remark_gfm: "4.0.1"
+    react_syntax_highlighter: "16.1.0"
+    syntax_theme: Prism
+
+  animation: "framer-motion — FAQAnswerModal, DashboardPage card stagger"
+  ui_icons: lucide-react 0.574.0
+  notifications: react-toastify 11.0.5
+
+  testing:
+    runner: "vitest 4.0.18"
+    dom: jsdom
+    testing_library: "@testing-library/react 16.3.2"
+    user_events: "@testing-library/user-event"
+    api_mocking: "msw 2.12.10 (Mock Service Worker)"
+    setup_file: src/__tests__/setup.ts
+    test_utils: src/__tests__/test-utils.tsx  # custom render() with Redux + MemoryRouter
+
+  linting:
+    eslint: "9.39.1"
+    config: eslint.config.js (ESLint 9 flat config)
+
+  formatting:
+    prettier: "3.8.1"
+    config: .prettierrc
+    settings:
+      tab_width: 2
+      single_quote: true
+      trailing_comma: all
+
+# ==============================================================================
+# DIRECTORY STRUCTURE (v2.1)
+# ==============================================================================
+
+directory_structure:
+  src/:
+    App.tsx: >
+      Root component. Gradient cursor glow (mousemove). Global header with logo +
+      breadcrumb (shows projectName from location.state when on project page).
+      Routes: '/' -> DashboardPage, '/projects/:id' -> MindMapRoute, '*' -> DashboardPage.
+      MindMapRoute is an inner wrapper that reads useParams + useLocation.state and
+      passes projectId + projectName + onBack to MindMapView.
+    main.tsx: "React DOM render — wraps App in BrowserRouter + Redux Provider + PersistGate"
+    index.css: Tailwind base imports + custom utilities (glass-card, gradient-cursor)
+
+    components/:
+      mindmap/:
+        MindMapView.tsx: >
+          Main interactive SVG mind map. Props: { projectId, projectName, onBack }.
+          Layout: ROOT_X=90, CAT_X=300, SVG_WIDTH=600.
+          Questions are NOT SVG nodes — they appear in a slide-in side panel.
+          Features: multi-file sequential upload, FAQ loading, AI chat panel,
+          zoom controls, search filter, category legend (bottom-left), document list,
+          General category delete/clear.
+        FAQAnswerModal.tsx: >
+          framer-motion modal for clicked FAQ answers. Backdrop blur overlay,
+          category badge, question heading, answer body, source file attribution.
+
+      chat/:
+        ChatWindow.tsx: Main RAG chat UI container
+        InputBox.tsx: Auto-resizing textarea with Enter-to-send
+        MessageBubble.tsx: >
+          Markdown message with sources, copy, timestamps.
+          Shows 'FAQ' or 'RAG' badge based on source_type.
+        Sidebar.tsx: Conversation list
+        UploadButton.tsx: Upload button component
+
+      common/:
+        Button/Button.tsx: Reusable button (variants + sizes + loading state)
+
+      layout/:
+        Layout wrappers
+
+    pages/:
+      DashboardPage.tsx: >
+        Project cards grid. CARD_COLORS cycles 7 accent colours. Loading/error/empty states.
+        '+ New Project' modal — calls projectService.createProject, then navigates to
+        mind map with {state:{projectName}}. framer-motion stagger + whileHover y:-4.
+        Has global AI chat panel (no project_id).
+
+    store/:
+      index.ts: Redux store config + redux-persist
+      slices/:
+        authSlice.ts: Authentication state (persisted)
+        chatSlice.ts: Conversation and message state (persisted)
+        organizationSlice.ts: Organization state (persisted)
+        profileSlice.ts: User profile state (NOT persisted)
+        uiSlice.ts: Modal visibility state (NOT persisted)
+        faqSlice.ts: >
+          FAQ state {categories, total, isLoading, error} — NOT persisted.
+          CRITICAL: Never import RootState from '@store/index' here — circular dep.
+          Use: type StateWithFAQ = { faq: FAQState }
+
+    services/api/:
+      axiosConfig.ts: Axios instance with base URL + interceptors
+      urls.ts: >
+        RAG_URLS constants including:
+          FAQ_DELETE: (id: number) => /faqs/${id}
+          FAQ_CHAT_CLEAR: '/faqs/chat'
+      ragService.ts: postQuery(), postUpload(), getStatus()
+      faqService.ts: getFAQs(), deleteFAQ(), clearChatFAQs()
+      projectService.ts: createProject(), listProjects(), getProject(), deleteProject()
+      authService.ts: Auth API calls
+      userService.ts: User profile API calls
+
+    routes/:
+      routeNames.ts: >
+        ROUTES.DASHBOARD = '/'
+        ROUTES.PROJECT_MINDMAP = (projectId) => /projects/${projectId}
+
+    types/:
+      rag.types.ts: "QueryResponse (+source_type), UploadResponse (+faqs_generated), QueryRequest (+project_id)"
+      faq.types.ts: "FAQEntry, FAQCategoryData, FAQsResponse"
+      auth.types.ts, chat.types.ts, org.types.ts, api.types.ts
+
+    hooks/:
+      redux.ts: Typed useAppDispatch, useAppSelector
+
+    utils/:
+      alerts.ts, constants.ts, helpers.ts, validation.ts
+
+    functions/:
+      static_variable.ts: Single source of truth for env config (server_url, login_url, app_name)
+      Utils.ts: Environment-aware URL resolver
+
+    styles/:
+      global.css, reset.css, variables.css, common.css
+
+    i18n/:
+      i18n.ts: Lightweight translation (58 keys, no external dep)
+
+    assets/: Static images and SVGs
+
+    __tests__/:
+      setup.ts: Vitest + jest-dom setup
+      test-utils.tsx: Custom render() with Redux Provider + MemoryRouter
+
+# ==============================================================================
+# MIND MAP COMPONENT DETAILS (MindMapView.tsx) — v2.1
+# ==============================================================================
+
+mind_map:
+  layout:
+    ROOT_X: 90
+    CAT_X: 300
+    SVG_WIDTH: 600
+    note: >
+      NO Q_X. Questions are NOT drawn in the SVG as leaf nodes.
+      They appear in a slide-in side panel when a category node is clicked.
+      Old v2.0 docs incorrectly listed Q_X=660 and SVG_WIDTH=1050 — those are wrong.
+
+  root_node:
+    label: "projectName prop if provided, else 'SellBot AI'"
+    style: Blue pill shape
+
+  category_nodes:
+    style: Colored circle with icon + label, +/- toggle
+    on_click: Opens slide-in side panel for that category
+
+  category_config:
+    Pricing:        {color: "#3b82f6", icon: DollarSign}
+    Amenities:      {color: "#8b5cf6", icon: Sparkles}
+    Location:       {color: "#14b8a6", icon: MapPin}
+    Process:        {color: "#f59e0b", icon: ClipboardList}
+    Specifications: {color: "#ec4899", icon: Ruler}
+    Security:       {color: "#ef4444", icon: Shield}
+    General:        {color: "#6b7280", icon: Info}
+
+  category_legend:
+    position: "absolute bottom-3 left-3 glass-card"
+    # bottom-LEFT to avoid overlap with AI chat FAB (fixed bottom-right)
+
+  side_panel:
+    trigger: Click on any category node
+    general_category_rules:
+      - Only shows FAQs where source_file = 'user_chat'
+      - Document-sourced FAQs categorized as General by LLM are excluded entirely
+      - Each item has a visible Trash2 delete button (not hover-only — always visible)
+      - Clear All button shown in panel header when General has any items
+    other_categories: All document FAQs. No delete buttons.
+
+  multi_file_upload:
+    attribute: "multiple on file input"
+    strategy: Sequential (one file at a time) — avoids LLM rate limits
+    state_vars:
+      uploadFileIndex: "current file (1-based)"
+      uploadFileTotal: total files selected
+      uploadFileName: current file name
+      uploadResult: "{totalChunks, totalFaqs, fileCount}"  # aggregated
+    ui: >
+      Shows 'File X of Y' badge during upload.
+      Progress steps animate per-file.
+      Done summary shows total across all files.
+
+  new_state_vars_v2_1:
+    deletingFaqId: "number | null — which FAQ delete is in progress (shows spinner)"
+    clearingChat: "boolean — Clear All in progress"
+
+  ai_chat_panel:
+    trigger: FAB button fixed bottom-right
+    scope: project_id scoped (passes project_id to POST /query)
+    source_badge: "'FAQ' or 'RAG' badge on assistant messages"
+    faq_storage:
+      behavior: upsert (ILIKE match — same question updates answer, new question inserts)
+      no_info_guard: >
+        12 phrases (case-insensitive) — if matched, answer NOT stored in FAQ table:
+        "couldn't find", "could not find", "i don't have information",
+        "i don't have that information", "no information available",
+        "no relevant information", "i'm unable to find", "i cannot find",
+        "not found in the", "i don't know", "no data available", "unable to answer"
+
+  data_loading:
+    function: loadFAQs
+    pattern: "useCallback([dispatch])"
+    trigger: "useEffect([projectId]) — clears FAQ state first, then fetches"
+
+# ==============================================================================
+# REDUX STORE (v2.1)
+# ==============================================================================
+
+redux_store:
+  persistence:
+    storage: localStorage
+    key: root
+    whitelist: [auth, organization, chat]
+    # 'faq' intentionally excluded — ERR_015
+
+  slices:
+    faqSlice:    {persisted: false, state: "categories, total, isLoading, error"}
+    authSlice:   {persisted: true,  state: "user, token, isAuthenticated, isLoading, error"}
+    chatSlice:   {persisted: true,  state: "conversations, activeConversationId, isLoading"}
+    orgSlice:    {persisted: true,  state: "currentOrg, orgList, members, isLoading, error"}
+    profileSlice:{persisted: false, state: "profile, isLoading, error"}
+    uiSlice:     {persisted: false, state: "popups, isGlobalLoading"}
+
+# ==============================================================================
+# API SERVICES (v2.1)
+# ==============================================================================
+
+api_services:
+
+  url_constants:  # src/services/api/urls.ts
+    RAG_URLS:
+      QUERY: /query
+      UPLOAD: /upload
+      STATUS: /status
+      RESET: /reset
+      FAQS: /faqs
+      PROJECTS: /projects
+      PROJECT: "(id) => /projects/${id}"
+      FAQ_DELETE: "(id: number) => /faqs/${id}"
+      FAQ_CHAT_CLEAR: /faqs/chat
+
+  faqService:
+    getFAQs:       "GET /faqs?project_id=..."
+    deleteFAQ:     "DELETE /faqs/{id}?project_id=..."
+    clearChatFAQs: "DELETE /faqs/chat?project_id=..."
+
+  projectService:
+    createProject: "POST /projects  {project_name}"
+    listProjects:  "GET /projects"
+    getProject:    "GET /projects/{id}"
+    deleteProject: "DELETE /projects/{id}"
+
+  ragService:
+    postQuery:  "POST /query  {question, top_k?, project_id?} → QueryResponse (+source_type)"
+    postUpload: "POST /upload  FormData{file, project_id?} → UploadResponse (+faqs_generated)"
+    getStatus:  "GET /status"
+
+# ==============================================================================
+# ROUTING (v2.1)
+# ==============================================================================
+
+routes:
+  "/":
+    component: DashboardPage
+  "/projects/:projectId":
+    component: "MindMapRoute → MindMapView"
+    state: "{projectName: string}  # passed via navigate() location.state"
+  "*":
+    component: DashboardPage  # catch-all
+
+  navigation_pattern: >
+    DashboardPage: navigate('/projects/:id', {state:{projectName}})
+    MindMapRoute:  useParams() → projectId, useLocation().state → projectName
+    Back button:   onBack() → navigate('/')
+
+# ==============================================================================
+# DESIGN TOKENS (Midnight Rose dark theme)
+# ==============================================================================
+
+design_tokens:
+  palette:
+    brand_primary:   "#fb7185"  # rose-400
+    brand_secondary: "#94a3b8"  # slate-400
+    brand_bg:        "#1e293b"  # slate-800
+    brand_dark:      "#0f172a"  # slate-900
+
+  utilities:
+    glass_card: "bg rgba(255,255,255,0.03) + backdrop-blur(12px) + border rgba(255,255,255,0.1)"
+    gradient_cursor: "Fixed radial-gradient div tracking mouse via mousemove in App.tsx"
+
+  animations:
+    faq_modal:       "framer-motion AnimatePresence + motion.div scale+opacity"
+    dashboard_cards: "framer-motion staggerChildren on container, whileHover y:-4"
+
+# ==============================================================================
+# CRITICAL GOTCHAS (v2.1)
+# ==============================================================================
+
+critical_gotchas:
+
+  circular_import_in_faq_slice:
+    symptom: White blank page (no terminal error)
+    fix: "Use local type alias: type StateWithFAQ = { faq: FAQState } — never import RootState in a slice"
+
+  types_alias_conflict:
+    symptom: "TS6137 — cannot re-export type"
+    fix: "Use relative import in faqSlice.ts: ../../types/faq.types — NOT @types/faq.types"
+
+  payload_action_import:
+    fix: "import type { PayloadAction } from '@reduxjs/toolkit'"
+
+  faq_persist_removed:
+    symptom: Stale FAQ data on frontend restart
+    fix: "Removed 'faq' from whitelist (ERR_015). FAQ always fetched fresh."
+
+  mindmap_layout_correct_values:
+    correct: "ROOT_X=90, CAT_X=300, SVG_WIDTH=600 — no Q_X"
+    wrong:   "Q_X=660 and SVG_WIDTH=1050 in old v2.0 docs — do not use"
+
+# ==============================================================================
+# PATH ALIASES (defined in vite.config.ts)
+# ==============================================================================
+
+path_aliases:
+  "@":           src/
+  "@components": src/components/
+  "@pages":      src/pages/
+  "@store":      src/store/
+  "@services":   src/services/
+  "@utils":      src/utils/
+  "@hooks":      src/hooks/
+  "@types":      src/types/   # WARNING: use relative import with 'import type', not @types/
+  "@styles":     src/styles/
+  "@assets":     src/assets/
+  "@routes":     src/routes/
+  "@i18n":       src/i18n/
+  "@functions":  src/functions/
+
+# ==============================================================================
+# NPM SCRIPTS
+# ==============================================================================
+
+scripts:
+  "npm run dev":          Vite dev server on port 3000
+  "npm run build":        "tsc -b && vite build"
+  "npm run preview":      Preview production build
+  "npm run lint":         ESLint check
+  "npm run lint:fix":     Auto-fix linting
+  "npm run format":       Prettier format
+  "npm run format:check": Check formatting
+  "npm run test":         Vitest watch mode
+  "npm run test:ui":      Vitest browser UI
+  "npm run test:coverage":Coverage report
+  "npm run type-check":   TypeScript check without emit
+
+# ==============================================================================
+# OTHER FRONTENDS IN PROJECT
+# ==============================================================================
+
+other_frontends:
+  overview:
+    location: overview/
+    description: Standalone React 18 marketing page
+    stack: "React 18, no TypeScript, no Redux"
+    notes: "No backend integration. Live demo links removed."

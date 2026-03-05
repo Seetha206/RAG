@@ -3,3 +3,7 @@ sentence-transformers
 faiss-cpu
 python-dotenv
 numpy
+
+
+ollama pull liquid/lfm2:1.2b
+ollama serve
