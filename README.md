@@ -1,31 +1,24 @@
-# SellBot RAG System — AI-Powered Real Estate Sales OS
+# SellBot AI — RAG System v2.1.0
 
-A modular Retrieval Augmented Generation (RAG) API built with FastAPI (Python 3.11+) that enables document upload (PDF, DOCX, Excel, TXT) and semantic querying for real estate sales operations.
+AI-powered real estate Sales Operating System. A modular RAG API (FastAPI + pgvector) with multi-project (multi-tenant) support, FAQ auto-generation, and an interactive SVG mind map React frontend.
 
 ---
 
 ## Architecture
 
+**Query pipeline (FAQ-first, then RAG fallback):**
 ```
-User Query
-  |
-  v
-[Query Normalization] --> [Embed Query (BAAI/bge-large, 1024d)]
-  |
-  v
-[pgvector HNSW Cosine Search (top_k=10)]
-  |
-  v
-[Similarity Threshold Filter (>0.15)]
-  |
-  v
-[Gemini Flash LLM generates answer with context]
-  |
-  v
-Response + Source Citations (with % match scores)
+Question → normalize_query() → PostgreSQL FTS (ts_rank, GIN index)
+  → FAQ match?  YES → return answer  (source_type="faq")
+  → NO → embed query → pgvector HNSW search → LLM → return answer  (source_type="rag")
 ```
 
-**Plugin-based design:** Swap embedding models, vector databases, or LLMs by editing `config.py` only — no code changes needed.
+**Upload pipeline:**
+```
+File (bytes) → document_parsers.py → chunk_text() → embeddings.py → vector_db.add() → faq_generator.py (LLM-direct FAQ extraction)
+```
+
+**Plugin-based design:** Swap embedding models, vector DBs, or LLMs by editing `config.py` only.
 
 ---
 
@@ -34,10 +27,10 @@ Response + Source Citations (with % match scores)
 | Layer | Technology | Details |
 |-------|-----------|---------|
 | **Backend** | FastAPI | Python 3.11+, async endpoints |
-| **Embeddings** | BAAI/bge-large-en-v1.5 | Local, 1024 dimensions |
+| **Embeddings** | BAAI/bge-large-en-v1.5 | Local ONNX via fastembed, 1024 dims |
 | **Vector DB** | pgvector (PostgreSQL) | HNSW index, cosine similarity |
-| **LLM** | Google Gemini Flash | 1M token context window |
-| **Frontend** | React 19 + TypeScript | Vite 7, Tailwind CSS, Redux Toolkit |
+| **LLM** | Ollama sam860/LFM2:1.2b | Local default; Gemini Flash = cloud fallback |
+| **Frontend** | React 19 + TypeScript | Vite 7, Tailwind v3, Redux Toolkit, SVG mind map |
 
 ---
 
@@ -50,22 +43,33 @@ Response + Source Citations (with % match scores)
 python -m venv venv && source venv/bin/activate
 pip install -r requirements_api.txt
 
+# Ollama (required for default local LLM)
+ollama serve
+ollama pull sam860/LFM2:1.2b
+
 # Configure
 cp .env.example .env
-# Edit .env → add GEMINI_API_KEY and PGVECTOR_CONNECTION_STRING
+# Edit .env → set PGVECTOR_CONNECTION_STRING
+# (add GEMINI_API_KEY only if switching to cloud LLM)
 
 # Run
 uvicorn app:app --reload
 # API docs → http://localhost:8000/docs
 ```
 
-### Frontend (React)
+### Frontend (React mind map)
 
 ```bash
 cd RAG
 npm install
 npm run dev
 # Opens → http://localhost:3000
+```
+
+### First-time DB migration (existing installations only)
+
+```bash
+python scripts/migrate_multiproject.py
 ```
 
 ### Production
@@ -78,161 +82,127 @@ gunicorn app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 
 ## API Endpoints
 
+### Projects (multi-tenant)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/upload` | Upload document (PDF/DOCX/XLSX/TXT, max 50MB) — parsed in-memory, chunked, embedded, stored |
-| `POST` | `/query` | RAG query `{question, top_k?}` → `{answer, sources, processing_time_ms}` |
+| `POST` | `/projects` | Create project → `{project_id, project_name, vdb_namespace}` |
+| `GET` | `/projects` | List all projects |
+| `GET` | `/projects/{id}` | Get single project |
+| `DELETE` | `/projects/{id}` | Delete project + all data (Default Project protected) |
+
+### Documents & Query
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/upload` | Upload document (PDF/DOCX/XLSX/TXT, max 50MB) + auto-generate FAQs |
+| `POST` | `/query` | FAQ-first then RAG query `{question, top_k?, project_id?}` |
 | `GET` | `/status` | System health — document count, vector count, active providers |
-| `DELETE` | `/reset` | Clear all vectors from database |
-| `POST` | `/save` | Persist FAISS index to disk (FAISS only) |
-| `POST` | `/load` | Restore FAISS index from disk (FAISS only) |
+
+### FAQs
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/faqs` | FAQ entries grouped by category `?project_id=<uuid>` |
+| `DELETE` | `/faqs/chat` | Clear all AI-chat FAQs for a project |
+| `DELETE` | `/faqs/{faq_id}` | Delete a single FAQ entry |
+
+### Utilities
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `DELETE` | `/reset` | Clear all vectors |
+| `POST` | `/save` / `POST /load` | Persist/restore FAISS index (FAISS only) |
 
 ---
 
 ## Project Structure
 
 ```
-├── app.py                        # FastAPI server — routes + global state init
-├── config.py                     # All provider selection and tuning parameters
-├── .env                          # API keys (GEMINI_API_KEY, PGVECTOR_CONNECTION_STRING)
+├── app.py                    # FastAPI entry point — routes + global state
+├── config.py                 # All provider selection and tuning parameters
+├── src/
+│   ├── embeddings.py         # EmbeddingProvider ABC → Local, OpenAI, Cohere
+│   ├── vector_databases.py   # VectorDatabase ABC → pgvector, FAISS, ChromaDB, Pinecone
+│   ├── document_parsers.py   # In-memory parsers (PDF, DOCX, XLSX, TXT) + chunk_text()
+│   ├── models.py             # Pydantic models (Query, Upload, FAQ, Project)
+│   ├── llm.py                # LLM client factory + generate_answer()
+│   ├── query_utils.py        # normalize_query() — BHK, sqft, Crores, Lakhs
+│   ├── faq_db.py             # FAQ CRUD — store, search (ts_rank), upsert_chat_faq,
+│   │                         #   delete_faq_by_id, delete_chat_faqs, get_all_faqs
+│   ├── faq_generator.py      # LLM-direct FAQ extraction (non-fatal, 7 categories)
+│   └── project_manager.py    # Project CRUD + get_or_create_default_project()
 │
-├── src/                          # Core library package
-│   ├── __init__.py               # Re-exports public API
-│   ├── embeddings.py             # EmbeddingProvider ABC → Local, OpenAI, Cohere
-│   ├── vector_databases.py       # VectorDatabase ABC → FAISS, ChromaDB, Pinecone, pgvector
-│   ├── document_parsers.py       # Streaming parsers (PDF, DOCX, XLSX, TXT) + chunk_text + clean_text
-│   ├── models.py                 # Pydantic request/response models
-│   ├── llm.py                    # LLM client factory + generate_answer()
-│   └── query_utils.py            # normalize_query() for real estate shorthand
+├── RAG/                      # React 19 + TypeScript frontend
+│   └── src/
+│       ├── App.tsx           # BrowserRouter routes + gradient cursor header
+│       ├── components/mindmap/
+│       │   ├── MindMapView.tsx    # SVG mind map (ROOT_X=90, CAT_X=300, SVG_WIDTH=600)
+│       │   └── FAQAnswerModal.tsx # framer-motion FAQ answer overlay
+│       ├── pages/DashboardPage.tsx  # Project cards + global AI chat
+│       ├── store/slices/faqSlice.ts # FAQ Redux slice (not persisted)
+│       ├── services/api/
+│       │   ├── ragService.ts    # postQuery, postUpload, getStatus
+│       │   ├── faqService.ts    # getFAQs, deleteFAQ, clearChatFAQs
+│       │   └── projectService.ts # Project CRUD API calls
+│       └── types/
+│           ├── rag.types.ts    # QueryRequest/Response + source_type, project_id
+│           └── faq.types.ts    # FAQEntry, FAQCategoryData, FAQsResponse
 │
-├── scripts/                      # Utility and standalone scripts
-│   ├── simple_rag.py             # End-to-end RAG demo (FAISS + Gemini, no API server)
-│   ├── inspect_db.py             # Inspect vector DB contents and stats
-│   ├── inspect_faiss.py          # FAISS index inspection
-│   ├── pinecone_rag.py           # Pinecone integration example
-│   └── generate_docs.py          # Generate test real estate documents
+├── scripts/
+│   ├── migrate_multiproject.py  # One-time DB migration (idempotent)
+│   ├── generate_project_docs.py # Generate test docs for 10 RE projects
+│   ├── simple_rag.py            # End-to-end demo (FAISS + Gemini, no API)
+│   └── inspect_db.py            # Inspect vector DB contents
 │
-├── RAG/                          # React 19 + TypeScript frontend
-│   ├── src/
-│   │   ├── App.tsx               # Layout with header, sidebar, chat window
-│   │   ├── components/
-│   │   │   └── chat/
-│   │   │       ├── ChatWindow.tsx    # Main chat — hero state, messages, FAQ cards
-│   │   │       ├── InputBox.tsx      # Query bar with search icon
-│   │   │       ├── MessageBubble.tsx # User/assistant messages with markdown + sources
-│   │   │       ├── Sidebar.tsx       # Conversation list
-│   │   │       └── UploadButton.tsx  # File upload (icon + prominent variants)
-│   │   ├── store/slices/
-│   │   │   └── chatSlice.ts      # Redux state — conversations, messages, loading
-│   │   ├── services/api/
-│   │   │   └── ragService.ts     # API calls — postQuery, postUpload, getStatus
-│   │   └── types/
-│   │       ├── chat.types.ts     # Message, Conversation types
-│   │       └── rag.types.ts      # QueryRequest, QueryResponse, Source types
-│   └── package.json
-│
-├── frontend/                     # Minimal vanilla HTML/CSS/JS chat UI (legacy)
-│
-├── knowledge_base/               # All documentation and learning resources
-│   ├── SELLBOT_SYSTEM_ARCHITECTURE.md # Full system architecture doc
-│   ├── API_DOCUMENTATION.md          # Complete API reference
-│   ├── PGVECTOR_SETUP.md             # PostgreSQL + pgvector setup guide
-│   ├── PRODUCTION_DEPLOYMENT.md      # Production deployment guide
-│   ├── EMBEDDING_MODELS.md           # Embedding model comparison
-│   ├── RAG_DEEP_DIVE.md              # Conceptual RAG guide
-│   ├── TECHNICAL_DEEP_DIVE.md        # Architecture deep dive
-│   ├── CODE_EXPLANATION.md            # Code walkthrough
-│   ├── QUICK_START.md                 # Quick start guide
-│   ├── NEW_SETUP_GUIDE.md            # Step-by-step setup
-│   ├── chunks_explained.md           # How document chunking works
-│   ├── similarity_percentage_explained.md  # What match % scores mean
-│   ├── similarity_threshold_explained.md   # Threshold tuning guide
-│   ├── prompt_engineering.md         # System prompt design and tuning
-│   ├── semantic_questions.md         # 40 test questions for RAG system
-│   └── backend_retrieval_fixes.md    # All pipeline fix documentation
-│
-├── real_estate_documents/        # 14 test documents (10 PDF, 2 XLSX, 2 DOCX)
-├── error_logs/                   # Error tracking (YAML)
-├── session_logs/                 # Session activity logs (YAML)
-│
-├── requirements_api.txt          # Primary dependencies
-├── requirements_production.txt   # Production dependencies (gunicorn, monitoring)
-├── CLAUDE.md                     # Claude Code instructions
-└── README.md                     # This file
+├── knowledge_base/           # All documentation and guides
+├── YAML/                     # System reference docs (backend v2.1, frontend v2.1, structure)
+├── real_estate_documents/    # 10 test project folders (brochure, price list, FAQ, etc.)
+├── error_logs/               # Error tracking (YAML, manually maintained)
+├── session_logs/             # Session activity logs (YAML, manually maintained)
+├── requirements_api.txt      # Primary dependencies
+└── CLAUDE.md                 # Claude Code project instructions
 ```
 
 ---
 
-## RAG Pipeline Details
+## Database Schema
 
-### Document Upload Flow
 ```
-File (bytes) → validate_file_size() → auto_detect_and_parse() → clean_text() → chunk_text() → embed() → vector_db.add()
-```
-
-### Query Flow
-```
-Question → normalize_query() → embed() → vector_db.search(top_k=10) → filter(score > 0.15) → generate_answer(LLM) → response
+projects          →  project_id (UUID PK), project_name, vdb_namespace
+rag_documents     →  id, project_id (FK), embedding vector(1024), text, metadata
+faq_entries       →  id (SERIAL PK), project_id (FK), question, answer, category,
+                      source_file  ('user_chat' = AI chat sourced)
 ```
 
-### Key Configuration (config.py)
-
-```python
-RAG_CONFIG = {
-    "chunk_size": 800,              # Characters per chunk (sentence-boundary aware)
-    "chunk_overlap": 200,           # Overlap between chunks
-    "top_k": 10,                    # Chunks retrieved per query
-    "similarity_threshold": 0.15,   # Minimum cosine similarity
-}
-```
-
-### Query Normalization
-The system automatically normalizes common real estate shorthand before embedding:
-- `3BHK` → `3 BHK`
-- `1200sqft` → `1200 sq.ft.`
-- `1.5cr` → `1.5 Crores`
-- `50L` → `50 Lakhs`
-- `INR` → `Rs.`
+Default Project (`vdb_namespace='default'`) is created at startup and cannot be deleted.
 
 ---
 
-## Adding New Providers
+## Key Concepts
 
-### New Embedding Provider
-1. Create class in `src/embeddings.py` inheriting `EmbeddingProvider`
-2. Implement `embed()`, `get_dimensions()`, `get_model_name()`
-3. Add to `get_embedding_provider()` factory
-4. Add config to `config.py`
+### General Category Rule
+The `General` category in the mind map shows **only AI-chat sourced FAQs** (`source_file='user_chat'`). Document FAQs that the LLM classified as General are excluded.
 
-### New Vector Database
-1. Create class in `src/vector_databases.py` inheriting `VectorDatabase`
-2. Implement `add()`, `search()`, `save()`, `load()`, `reset()`, `get_stats()`
-3. Add to `get_vector_database()` factory
-4. Add config to `config.py`
+### FAQ Upsert (no duplicates)
+When the same question is asked in AI chat, the existing answer is updated — a new row is never created (ILIKE case-insensitive match).
 
-### New Document Parser
-1. Add parser function (`bytes → str`) to `src/document_parsers.py`
-2. Register in `auto_detect_and_parse()`
-3. Update `DOCUMENT_CONFIG["supported_formats"]`
+### No-Info Guard
+If the LLM returns a "no information" answer (12 phrases checked), it is **not** stored in the FAQ table.
 
-### New LLM Provider
-1. Add `elif` branch in `create_llm_client()` and `generate_answer()` in `src/llm.py`
-2. Add config to `config.py` under `LLM_CONFIG`
+### Multi-file Upload
+The frontend supports selecting multiple files and uploads them sequentially (one at a time) to avoid LLM rate limits.
 
 ---
 
-## Environment Variables (.env)
+## Environment Variables
 
 ```bash
 # Required
-GEMINI_API_KEY=...
-PGVECTOR_CONNECTION_STRING=postgresql://user:pass@localhost:5432/rag_db
+PGVECTOR_CONNECTION_STRING=postgresql://user:pass@localhost:5432/dbname
 
-# Optional (uncomment providers as needed)
-# OPENAI_API_KEY=...
-# ANTHROPIC_API_KEY=...
-# COHERE_API_KEY=...
-# PINECONE_API_KEY=...
+# Cloud LLM (only needed if switching away from Ollama)
+GEMINI_API_KEY=...        # Confirmed working fallback
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+COHERE_API_KEY=...
+PINECONE_API_KEY=...
 ```
 
 ---
@@ -241,29 +211,12 @@ PGVECTOR_CONNECTION_STRING=postgresql://user:pass@localhost:5432/rag_db
 
 ```bash
 cd RAG
-npm run dev          # Vite dev server (localhost:3000)
-npm run build        # Production build
-npm run lint         # ESLint
-npm run test         # Vitest (watch mode)
+npm run dev           # Vite dev server (localhost:3000)
+npm run build         # tsc -b && vite build
+npm run lint          # ESLint
+npm run type-check    # tsc --noEmit
+npm run test          # Vitest watch mode
 npm run test:coverage
-npm run type-check   # tsc --noEmit
-```
-
----
-
-## Testing
-
-```bash
-# Utility scripts
-python scripts/simple_rag.py      # End-to-end RAG flow
-python scripts/inspect_db.py      # Inspect vector DB contents
-python scripts/generate_docs.py   # Generate test documents
-
-# API health
-curl http://localhost:8000/status
-
-# Frontend tests
-cd RAG && npm run test
 ```
 
 ---
@@ -274,22 +227,17 @@ cd RAG && npm run test
 |-----|----------|
 | Claude Code Guide | `CLAUDE.md` |
 | System Architecture | `knowledge_base/SELLBOT_SYSTEM_ARCHITECTURE.md` |
-| API Reference | `knowledge_base/API_DOCUMENTATION.md` |
+| FAQ + Mind Map Implementation | `knowledge_base/FAQ_MINDMAP_MULTIPROJECT_IMPLEMENTATION.md` |
+| Multi-Project Plan | `knowledge_base/MULTI_PROJECT_RAG_PLAN.md` |
+| Backend Reference v2.1 | `YAML/RAG_backend_v2.yml` |
+| Frontend Reference v2.1 | `YAML/RAG_frontend_v2.yml` |
+| Project Structure | `YAML/RAG_project_structure.yml` |
 | pgvector Setup | `knowledge_base/PGVECTOR_SETUP.md` |
-| Production Deployment | `knowledge_base/PRODUCTION_DEPLOYMENT.md` |
-| Embedding Models | `knowledge_base/EMBEDDING_MODELS.md` |
-| RAG Deep Dive | `knowledge_base/RAG_DEEP_DIVE.md` |
-| Technical Deep Dive | `knowledge_base/TECHNICAL_DEEP_DIVE.md` |
-| Quick Start | `knowledge_base/QUICK_START.md` |
-| Chunks Explained | `knowledge_base/chunks_explained.md` |
-| Similarity % Explained | `knowledge_base/similarity_percentage_explained.md` |
-| Threshold Tuning Guide | `knowledge_base/similarity_threshold_explained.md` |
-| Prompt Engineering | `knowledge_base/prompt_engineering.md` |
-| Semantic Test Questions | `knowledge_base/semantic_questions.md` |
-| Backend Fixes Log | `knowledge_base/backend_retrieval_fixes.md` |
-| Error Logs | `error_logs/error_seetha_logs_*.yml` |
+| LLM Options | `knowledge_base/LLM_OPTIONS.md` |
+| API Reference | `knowledge_base/API_DOCUMENTATION.md` |
+| Error Logs | `error_logs/` |
 | Session Logs | `session_logs/session_seetha_logs.yml` |
 
 ---
 
-Built with FastAPI, pgvector, BAAI/bge-large-en-v1.5, Gemini Flash, React 19, and TypeScript.
+Built with FastAPI · pgvector · fastembed (BAAI/bge-large-en-v1.5) · Ollama · React 19 · TypeScript · Tailwind v3

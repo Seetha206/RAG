@@ -29,7 +29,9 @@ Document upload (bytes stream) → `src/document_parsers.py` (in-memory parse) �
 │   ├── models.py             # Pydantic models (QueryRequest/Response, UploadResponse, StatusResponse, FAQ*, Project*)
 │   ├── llm.py                # LLM client init (create_llm_client) + generate_answer()
 │   ├── query_utils.py        # normalize_query() for real estate shorthand
-│   ├── faq_db.py             # FAQ table CRUD: setup_faq_table, store_faqs, get_all_faqs, search_faq, delete_faqs_by_file
+│   ├── faq_db.py             # FAQ table CRUD: setup_faq_table, store_faqs, get_all_faqs (General=user_chat only),
+│   │                         #   search_faq (ts_rank), upsert_chat_faq (ILIKE dedup),
+│   │                         #   delete_faq_by_id, delete_chat_faqs, delete_faqs_by_file
 │   ├── faq_generator.py      # LLM-direct FAQ extraction: generate_faqs() — bypasses RAG, sends full text to LLM
 │   └── project_manager.py    # Project CRUD: create_project, list_projects, get_project, delete_project, get_or_create_default_project
 ├── scripts/
@@ -41,7 +43,6 @@ Document upload (bytes stream) → `src/document_parsers.py` (in-memory parse) �
 │   └── generate_docs.py         # Generate test real estate documents
 ├── RAG/                      # React 19 + TypeScript + Vite + Tailwind v3 frontend (mind map UI)
 ├── overview/                 # Standalone React 18 informational/marketing page
-├── prototype/                # Minimal vanilla HTML/CSS/JS chat UI (single index.html)
 ├── knowledge_base/           # All documentation, guides, and architecture docs
 ├── YAML/                     # Deployment and setup config files (pgvector SQL, backend/frontend YAML)
 ├── real_estate_documents/    # Generated test documents
@@ -58,7 +59,7 @@ Document upload (bytes stream) → `src/document_parsers.py` (in-memory parse) �
 - `models.py` -- Pydantic models: `QueryRequest` (+ `project_id`), `QueryResponse` (+ `source_type`), `UploadResponse` (+ `faqs_generated`), `StatusResponse`, `FAQEntry`, `FAQCategoryData`, `FAQsResponse`, `ProjectCreate`, `ProjectResponse`, `ProjectListResponse`
 - `llm.py` -- `create_llm_client()` factory + `generate_answer(llm_client, query, chunks)` dispatcher
 - `query_utils.py` -- `normalize_query()` handles BHK, sqft, Crores, Lakhs, Rs/INR normalization
-- `faq_db.py` -- all PostgreSQL ops for `faq_entries` table; `search_faq()` uses `ts_rank` with GIN index; FAQ match threshold: `rank > 0.01`
+- `faq_db.py` -- all PostgreSQL ops for `faq_entries` table; `search_faq()` uses `ts_rank` with GIN index; FAQ match threshold: `rank > 0.01`; `get_all_faqs()` filters General category to `source_file='user_chat'` only; `upsert_chat_faq()` uses ILIKE dedup (UPDATE existing or INSERT new); `delete_faq_by_id()` and `delete_chat_faqs()` for General panel management
 - `faq_generator.py` -- `generate_faqs(text, llm_client, source_file, max_faqs=25)`; truncates to 50,000 chars; returns validated `{question, answer, category}` list; 7 fixed categories (Pricing, Amenities, Location, Process, Specifications, Security, General)
 - `project_manager.py` -- CRUD for the `projects` table; `get_or_create_default_project()` is called at startup to guarantee a fallback
 
@@ -153,7 +154,9 @@ npm run type-check    # tsc --noEmit
 - `DELETE /projects/{project_id}` -- delete project + all data (CASCADE); Default Project is protected
 - `POST /upload` -- stream document, parse in-memory, embed, store, auto-generate FAQs (PDF/DOCX/XLSX/TXT, max 50MB). Optional form field: `project_id`
 - `POST /query` -- FAQ-first then RAG query `{question, top_k?, project_id?}` returns `{answer, sources, processing_time_ms, source_type}`
-- `GET /faqs` -- FAQ entries grouped by category `?project_id=<uuid>` (optional)
+- `GET /faqs` -- FAQ entries grouped by category `?project_id=<uuid>` (optional); General category returns only `source_file='user_chat'` entries
+- `DELETE /faqs/chat` -- delete all AI-chat FAQs for a project
+- `DELETE /faqs/{faq_id}` -- delete a single FAQ by ID
 - `GET /status` -- system health (document count, vector count, active providers)
 - `DELETE /reset` -- clear all vectors
 - `POST /save` / `POST /load` -- persist/restore FAISS index only; no-ops for other providers
@@ -196,10 +199,10 @@ State management: Redux Toolkit with `redux-persist` (store in `src/store/`, sli
 
 **Key frontend files:**
 - `src/pages/DashboardPage.tsx` -- project cards grid; CARD_COLORS cycles 7 accent colours; loading/error/empty states; "+ New Project" modal (calls `projectService.createProject`, navigates to mind map); `formatDate()` via `Intl.DateTimeFormat`; framer-motion stagger + `whileHover y:-4`
-- `src/components/mindmap/MindMapView.tsx` -- accepts `{ projectId: string; onBack: () => void }` props (not self-managing); SVG layout: `ROOT_X=90`, `CAT_X=340`, `Q_X=660`, `SVG_WIDTH=1050`; `← Projects` back button; `useEffect([projectId])` immediately clears FAQ state then calls `loadFAQs()`; calls `GET /faqs` via `faqService.ts`, `POST /upload` and `POST /query` via `ragService.ts`
+- `src/components/mindmap/MindMapView.tsx` -- accepts `{ projectId, projectName, onBack }` props; SVG layout: `ROOT_X=90`, `CAT_X=300`, `SVG_WIDTH=600` (no Q_X — questions in side panel, not SVG nodes); General category: shows only `user_chat` FAQs, per-item delete + Clear All; multi-file sequential upload (File X of Y); category legend at bottom-left; `useEffect([projectId])` clears FAQ state then calls `loadFAQs()`
 - `src/components/mindmap/FAQAnswerModal.tsx` -- framer-motion animated modal for FAQ answers
-- `src/store/slices/faqSlice.ts` -- Redux slice for `{ categories, total, isLoading, error }` (not persisted)
-- `src/services/api/faqService.ts` -- `getFAQs()` calling `GET /faqs`
+- `src/store/slices/faqSlice.ts` -- Redux slice for `{ categories, total, isLoading, error }` (NOT persisted — removed from whitelist ERR_015)
+- `src/services/api/faqService.ts` -- `getFAQs()`, `deleteFAQ()`, `clearChatFAQs()`
 - `src/services/api/projectService.ts` -- project management API calls
 - `src/types/faq.types.ts` -- TypeScript interfaces: `FAQEntry`, `FAQCategoryData`, `FAQsResponse`
 

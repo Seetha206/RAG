@@ -950,3 +950,141 @@ sessions:
     pending_tasks:
       - "End-to-end test: create project → upload PDF → FAQ nodes in mind map → back to dashboard"
       - "Test project isolation: query project A, project B returns separate results"
+
+  - session_id: SESSION_007
+    date: "2026-03-05"
+    duration: "~4 hours"
+    summary: "General category isolation, FAQ delete/clear, multi-file upload, YAML v2.1.0 docs, monorepo setup"
+
+    activities:
+      - order: 1
+        timestamp: "2026-03-05T10:00:00"
+        action: "General category — user_chat only rule"
+        description: |
+          Modified get_all_faqs() in src/faq_db.py to filter General category
+          to source_file='user_chat' only. Document FAQs the LLM categorized as
+          General are excluded entirely from the mind map General panel.
+        files_changed:
+          - src/faq_db.py
+
+      - order: 2
+        timestamp: "2026-03-05T10:30:00"
+        action: "FAQ upsert, delete, clear — backend"
+        description: |
+          Added three new functions to src/faq_db.py:
+          - upsert_chat_faq(): ILIKE case-insensitive dedup — UPDATE answer if same
+            question exists, INSERT if new. Replaces store_faqs() for AI chat answers.
+          - delete_faq_by_id(): DELETE single FAQ by PK scoped to project_id.
+          - delete_chat_faqs(): DELETE all user_chat FAQs for a project.
+          Added to app.py:
+          - 12-phrase no-info guard (_NO_INFO_PHRASES) — AI "I don't know" answers
+            not stored in FAQ table.
+          - DELETE /faqs/chat endpoint
+          - DELETE /faqs/{faq_id} endpoint
+        files_changed:
+          - src/faq_db.py
+          - app.py
+
+      - order: 3
+        timestamp: "2026-03-05T11:00:00"
+        action: "FAQ delete/clear + multi-file upload — frontend"
+        description: |
+          MindMapView.tsx updates:
+          - General category side panel: per-item Trash2 delete button (always visible,
+            not hover-only); Clear All button in panel header.
+          - Multi-file upload: added 'multiple' attribute to file input. handleUpload
+            rewrote to loop files sequentially (one at a time, no parallel LLM calls).
+            Shows 'File X of Y' badge during upload. Aggregated done summary.
+          - New state vars: deletingFaqId, clearingChat, uploadFileIndex, uploadFileTotal.
+          - Category legend moved from bottom-right to bottom-left (was overlapping AI chat FAB).
+          Added to faqService.ts: deleteFAQ(), clearChatFAQs().
+          Added to urls.ts: FAQ_DELETE, FAQ_CHAT_CLEAR constants.
+        files_changed:
+          - RAG/src/components/mindmap/MindMapView.tsx
+          - RAG/src/services/api/faqService.ts
+          - RAG/src/services/api/urls.ts
+
+      - order: 4
+        timestamp: "2026-03-05T12:00:00"
+        action: "DB investigation and cleanup — Default Project contamination"
+        description: |
+          Global AI chat was returning 12 project names from context when user only
+          created 2 projects. Root cause: Default Project (UUID 77c83dc5-...) had
+          40 chunks from 11 old test PDFs uploaded before multi-project system existed.
+          Cleaned via direct psql:
+          - Deleted 40 chunks from rag_documents for Default Project
+          - Deleted 19 document FAQs from faq_entries for Default Project
+          - Kept user_chat FAQs
+          After cleanup: Default Project = 0 chunks, projects clean.
+        outcome: "Global chat no longer hallucinates project names"
+
+      - order: 5
+        timestamp: "2026-03-05T13:00:00"
+        action: "YAML documentation update — v2.1.0"
+        description: |
+          Fully rewrote YAML/RAG_backend_v2.yml to v2.1.0 with all session changes:
+          new endpoints, upsert behavior, no-info guard, General category rule.
+          Fully rewrote YAML/RAG_frontend_v2.yml to v2.1.0 with all corrections:
+          - persist_whitelist corrected to [auth, organization, chat] (faq removed)
+          - Layout constants corrected: ROOT_X=90, CAT_X=300, SVG_WIDTH=600 (no Q_X)
+          - New features documented: delete/clear, multi-file upload, legend position
+          Created new YAML/RAG_project_structure.yml: full repo directory tree reference.
+        files_changed:
+          - YAML/RAG_backend_v2.yml
+          - YAML/RAG_frontend_v2.yml
+          - YAML/RAG_project_structure.yml (new)
+
+      - order: 6
+        timestamp: "2026-03-05T13:30:00"
+        action: "Remove deprecated prototype"
+        description: |
+          Deleted prototype/index.html (vanilla HTML/CSS/JS chat UI — superseded by
+          React frontend). Removed references from YAML docs.
+        files_changed:
+          - prototype/index.html (deleted)
+
+      - order: 7
+        timestamp: "2026-03-05T14:00:00"
+        action: "Git commit and push to RAG repo"
+        description: |
+          Staged all changes (113 files, 11253 insertions) and pushed to
+          github.com/Seetha206/RAG.git on main branch.
+          Commit: 66060b4 — feat: multi-project RAG + FAQ mind map UI (v2.1.0)
+        outcome: "RAG repo up to date on GitHub"
+
+      - order: 8
+        timestamp: "2026-03-05T14:30:00"
+        action: "Monorepo setup in utility repo"
+        description: |
+          At /home/seetha/PycharmProjects/utility (production branch):
+          - Created new branch 'rag' from production
+          - On rag branch: moved all utility project files into utility/ subfolder
+            (app.py, src/, props.py, requirements.txt, CLAUDE.md, README.md,
+             gunicorn_config.py, app.env, temp/, .venv/, .vscode/, .idea/, .claude/)
+          - Copied full RAG project (v2.1.0) into RAG/ subfolder (excluding
+            node_modules, venv, __pycache__, dist, .git, vector_store)
+          - Created unified root .gitignore covering Python + Node + secrets + IDE + OS
+          Structure: utility/ | RAG/ | .gitignore (root only)
+          production branch: untouched.
+        files_changed:
+          - utility/ (all existing files moved here)
+          - RAG/ (full SellBot AI RAG project)
+          - .gitignore (unified)
+
+    current_state:
+      rag_repo:
+        branch: main
+        status: "pushed to GitHub — v2.1.0 complete"
+      utility_repo:
+        branch: rag
+        structure: "monorepo — utility/ + RAG/ + .gitignore"
+        production_branch: "untouched"
+      features_complete:
+        - "General category = user_chat FAQs only"
+        - "Delete per FAQ item in General + Clear All"
+        - "AI chat FAQ upsert (no duplicates)"
+        - "No-info guard (12 phrases)"
+        - "Multi-file sequential upload"
+        - "Category legend bottom-left"
+        - "YAML docs v2.1.0 (backend + frontend + project structure)"
+        - "Deprecated prototype removed"
